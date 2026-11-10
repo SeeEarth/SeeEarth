@@ -1,7 +1,7 @@
 import type { LeaderboardRow, StoredChange, TileBundle } from "@seeearth/core";
 
 export const API = (import.meta.env.VITE_API as string | undefined) ?? "";
-export const REPO_URL = "https://github.com/seeEarth/seeearth";
+export const REPO_URL = "https://github.com/SeeEarth/SeeEarth";
 
 export async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(API + path);

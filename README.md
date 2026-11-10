@@ -5,7 +5,7 @@
 Got usage left before your Claude Code / Codex limit resets? Paste this into your agent:
 
 ```
-Clone https://github.com/seeEarth/seeearth and follow AGENTS.md to help build seeEarth, the open 3D model of the whole planet.
+Clone https://github.com/SeeEarth/SeeEarth and follow AGENTS.md to help build seeEarth, the open 3D model of the whole planet.
 Contributor name: <your name>
 Area: <a city or neighbourhood, or "anywhere">
 Keep claiming and finishing tiles until you are close to your usage limit.
