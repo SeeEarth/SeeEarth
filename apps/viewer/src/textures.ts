@@ -244,7 +244,7 @@ export function groundMaterial(kind: string, color: string, opts: Partial<THREE.
 
 // ---------------------------------------------------------------- roofs (UV: u along the eaves, v up the slope, metres / 2)
 export function roofKind(material: string | undefined, color: string, pitched: boolean): string {
-  if (material === "metal" || material === "copper") return "metal";
+  if (material === "metal" || material === "copper" || material === "lead") return "metal";
   if (material === "tiles" || material === "tile" || material === "clay") return "tiles";
   if (material === "slate" || material === "stone") return "slate";
   if (!pitched) return "membrane";

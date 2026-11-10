@@ -363,7 +363,12 @@ export class World {
     const o = hit.object;
     let owner: string | undefined;
     const owners = o.userData.owners as string[] | undefined;
-    if (owners && hit.faceIndex != null) owner = owners[hit.faceIndex];
+    if (owners && hit.faceIndex != null) {
+      // owners[] is in the original triangle order. three-mesh-bvh adds an index to non-indexed
+      // geometry and sorts triangles in it, so map the hit back through that index.
+      const idx = (o as THREE.Mesh).geometry?.index;
+      owner = owners[idx ? Math.floor(idx.getX(hit.faceIndex * 3) / 3) : hit.faceIndex];
+    }
     const inst = o.userData.instanceOwners as string[] | undefined;
     if (!owner && inst && hit.instanceId != null) owner = inst[hit.instanceId];
     let p: THREE.Object3D | null = o;

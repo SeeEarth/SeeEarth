@@ -186,7 +186,7 @@ ${notes.length ? notes.map((n: TileNote) => `- ${untrusted(n.author, 40)}: «${u
 ${[...tagCounts].sort((a, b) => b[1] - a[1]).map(([v, n]) => `\`${untrusted(v, 60)}\` ×${n}`).join(", ") || "none"}
 
 ## Area rules already covering this tile
-${rules.length ? rules.map((r) => `- #${r.id} by ${untrusted(r.author, 40)} (matches ${base.buildings.filter((b) => ruleMatches(r.change as RuleChange, b)).length} of this tile's ${base.buildings.length} buildings): "${untrusted((r.change as { label: string }).label, 120)}" select ${untrusted(JSON.stringify((r.change as { select: unknown }).select), 200)} set ${untrusted(JSON.stringify((r.change as { set: unknown }).set), 300)}`).join("\n") : "none yet"}
+${rulesSection(rules, base)}
 
 ## Ground: courtyards, lawns, squares (AGENTS.md 3.4)
 ${groundSection(base, bundle.changes)}
@@ -201,6 +201,18 @@ passes facade/roof colours, materials, window style and storey height down to al
 ${rows.join("\n")}
 ${rest.length ? `\nNot listed (ordinary; cover them with rules): ${[...restSummary].map(([v, n]) => `building=${untrusted(v, 40)} ×${n}`).join(", ")}\n` : ""}`;
   writeFileSync(join(dir, "buildings.md"), md);
+}
+
+/** Rules that actually restyle buildings in this tile (others only touch neighbours), with their scope. */
+function rulesSection(rules: StoredChange[], base: BaseTile): string {
+  const hex = (s: string) => s.replace(/'([0-9a-fA-F]{6})\b/g, "#$1"); // untrusted() blanks '#'; colours are safe to show
+  const rows = rules.map((r) => ({ r, n: base.buildings.filter((b) => ruleMatches(r.change as RuleChange, b)).length })).filter((x) => x.n > 0);
+  const other = rules.length - rows.length;
+  if (!rows.length) return other ? `none match buildings here (${other} rules from neighbouring areas reach into this tile but match nothing)` : "none yet";
+  return rows.map(({ r, n }) => {
+    const ch = r.change as RuleChange;
+    return `- #${r.id} by ${untrusted(r.author, 40)} (matches ${n} of ${base.buildings.length} here; scope [W,S,E,N] ${ch.scope.bbox.map((v) => v.toFixed(4)).join(", ")}): "${untrusted(ch.label, 120)}" select ${hex(untrusted(JSON.stringify(ch.select), 200))} set ${hex(untrusted(JSON.stringify(ch.set), 300))}`;
+  }).join("\n") + (other ? `\n(${other} more rules from neighbouring areas reach into this tile but match nothing here)` : "");
 }
 
 /** Existing ground patches, and courtyards (holes in building outlines) that have no surface yet. */
@@ -486,10 +498,17 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     const key = currentTile();
     const ctx = context(key);
     const { list, valid, bad } = checkDrafts(key);
-    console.log(bad ? `${bad}/${list.length} drafts have errors (fix them; invalid drafts are not rendered or submitted)` : `✓ ${list.length} drafts valid`);
+    console.log(bad ? `${bad}/${list.length} drafts have errors (see above; invalid drafts are left out of renders and of the completeness below)` : `✓ ${list.length} drafts valid`);
     const fake = valid.map((change, i) => ({ id: 1e9 + i, tile: key, author: "(draft)", createdAt: Date.now(), change }));
     const q = tileQuality(ctx.base, [...ctx.changes, ...fake]);
     console.log(`completeness with your drafts: ${Math.round(q.score * 100)}% (done at ${Math.round(LIMITS.doneQuality * 100)}%) · notable ${q.notableCovered}/${q.notable} · ordinary ${q.ordinaryCovered}/${q.ordinary}${q.missing.length ? `\n  notable still missing: ${q.missing.slice(0, 10).join(", ")}` : ""}`);
+    console.log("  (only building descriptions count for notable buildings; rules cover ordinary ones)");
+    // which drafts still need a photo compare before submit accepts them
+    const checked = new Set(compares(key).flatMap((c) => c.drafts));
+    const submitted = readJSON<Submitted[]>(join(tileDir(key), "submitted.json"), []);
+    const pending = pendingDrafts(list, submitted).filter((x) => needsCompare(x.d) && !checked.has(x.h) && validateChange(x.d, ctx.base, { ruleMaxSpanDeg: leaseOf(key)?.ruleMaxSpanDeg }).ok);
+    if (pending.length) console.log(`! not yet checked in a photo compare (submit will refuse them): ${pending.map((x) => `[${list.indexOf(x.d)}] ${draftLabel(x.d)}`).join(", ")}`);
+    else console.log("✓ every new draft has been checked in a photo compare");
     if (bad) process.exitCode = 1;
   },
 
@@ -526,7 +545,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     for (const k of ["heading", "pitch", "dist", "fov", "eye"]) if (flag(k)) q.set(k, flag(k)!);
     if (!flag("pitch") && !target && !flags.plan) q.set("pitch", "-35");
     if (flags.highlight) q.set("highlight", "1");
-    const outFlag = flag("out");
+    const outFlag0 = flag("out"), outFlag = outFlag0 && !/\.png$/i.test(outFlag0) ? `${outFlag0.replace(/\.(jpe?g|webp)$/i, "")}.png` : outFlag0;
     const out = outFlag && (outFlag.includes("/") || outFlag.includes("\\")) ? resolve(outFlag) : join(tileDir(key), "renders", outFlag ?? (flags.plan ? `plan${flags.highlight ? "-highlight" : ""}.png` : `${target ?? "overview"}-${flag("heading") ?? "30"}${flags.highlight ? "-highlight" : ""}.png`));
     mkdirSync(dirname(out), { recursive: true });
     console.error("… rendering (seconds with a GPU; up to 3 minutes on machines without one)");
@@ -537,11 +556,12 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       await page.goto(`${viewer}/?${q}`, { timeout: 60_000 });
       const ready = await page.waitForFunction(() => (window as any).__SEEEARTH_READY__ === true, null, { timeout: 150_000 }).then(() => true).catch(() => false);
       const framed = await page.evaluate(() => (window as any).__SEEEARTH_FRAMED__ === true || !new URLSearchParams(location.search).has("target"));
-      const cam = await page.evaluate(() => (window as any).__SEEEARTH_CAMERA__ ?? null) as { insideOf: string | null; movedMetres: number; stillInside: string | null } | null;
+      const cam = await page.evaluate(() => (window as any).__SEEEARTH_CAMERA__ ?? null) as { insideOf: string | null; movedMetres: number; stillInside: string | null; autoHeading?: number } | null;
       await page.screenshot({ path: out });
       const seen = await page.evaluate(() => (window as any).__SEEEARTH_SEEN__?.() ?? null).catch(() => null) as { buildings: { id: string; share: number }[]; drafts: { i: number; share: number }[] } | null;
       return { ready, framed, errors, cam, seen };
     });
+    if (status.cam?.autoHeading != null) console.log(`  no --heading given: picked heading ${status.cam.autoHeading}° (the view that shows ${target} best). To match a photo, pass the photo's --heading.`);
     if (status.cam?.movedMetres) console.error(`! the camera stood inside ${status.cam.insideOf}; moved it ${status.cam.movedMetres} m towards the target so the view isn't a wall. For an exact viewpoint use --lat/--lon/--alt (see AGENTS.md 4.4).`);
     else if (status.cam?.stillInside) console.error(`! the camera is INSIDE building ${status.cam.stillInside}: this picture shows its walls, not the view. Move the camera (--lat/--lon, or a smaller --dist).`);
     // Which drafts this render shows well enough to count as photo-checked:
@@ -618,12 +638,18 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     // invalid drafts can't be rendered, so they go to the server and come back with their errors
     const base = context(key).base;
     const unchecked = fresh.filter((x) => needsCompare(x.d) && !checked.has(x.h) && validateChange(x.d, base, { ruleMaxSpanDeg: lease.ruleMaxSpanDeg }).ok);
-    if (unchecked.length) {
+    if (unchecked.length && flags["checked-only"]) {
+      console.log(`… leaving ${unchecked.length} unchecked draft(s) in drafts.json for later: ${unchecked.map((x) => draftLabel(x.d)).join(", ")}`);
+      const skip = new Set(unchecked.map((x) => x.h));
+      fresh.splice(0, fresh.length, ...fresh.filter((x) => !skip.has(x.h)));
+      if (!fresh.length) { console.log("nothing checked to submit yet"); return; }
+    } else if (unchecked.length) {
       die(`${unchecked.length} draft(s) haven't been checked against a photo yet:
 ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d)}`).join("\n")}${unchecked.length > 12 ? `\n    … and ${unchecked.length - 12} more` : ""}
   Every change must be seen in a photo compare before submitting (AGENTS.md 4.4):
     npm run se -- render --target <id> --heading <deg> --compare refs/<photo>.jpg
-  For an area rule, compare one street it covers. Editing a draft after its compare needs a new compare.`);
+  For an area rule, compare one street it covers. Editing a draft after its compare needs a new compare.
+  To submit everything else now and keep these for later: submit --checked-only`);
     }
     let ok = 0, bad = 0;
     for (let i = 0; i < fresh.length; i += 100) {
@@ -696,8 +722,11 @@ ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d
   },
 
   async model() {
-    const file = positional[0];
-    if (!file || !existsSync(file)) die("usage: model <script.ts> [--name house-a] [--params '{\"floors\":3}'] [--upload]");
+    let file = positional[0];
+    // a path relative to the tile folder works too (models/x.ts), not just to the repo
+    const tileOf = flag("tile") ?? currentKey();
+    if (file && !existsSync(file) && tileOf && existsSync(join(tileDir(tileOf), file))) file = join(tileDir(tileOf), file);
+    if (!file || !existsSync(file)) die(`${file ? `${file} not found (give a path relative to the tile folder or an absolute path). ` : ""}usage: model <script.ts> [--target w123] [--name house-a] [--params '{"floors":3}'] [--upload]`);
     const { transform } = await import("esbuild");
     const src = readFileSync(file, "utf8");
     if (/\bimport\s|require\(/.test(src.replace(/import\s+type[^;]+;/g, ""))) die("model scripts can't import anything: use the `k` (kit) and `THREE` arguments instead");
@@ -772,8 +801,9 @@ ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const get = async (url: string, tries = 5): Promise<Response> => {
       for (let i = 0; ; i++) {
-        const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(60_000) }).catch(() => null);
+        const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(25_000) }).catch(() => null);
         if (r && r.ok) return r;
+        if (i < tries - 1) console.error(`… Commons ${r ? `answered ${r.status}` : "timed out"}; retrying (${i + 1}/${tries - 1})`);
         if (i >= tries - 1) die(r?.status === 429 ? "Commons is rate-limiting this machine (HTTP 429). Wait a minute, then retry; meanwhile use web image search or Mapillary." : `download failed (${r?.status ?? "network"}): ${url}`);
         const retryAfter = Number(r?.headers.get("retry-after")) || 0;
         await sleep(Math.max(retryAfter * 1000, 3000 * 2 ** i)); // Commons rate-limits bursts: back off
@@ -781,7 +811,7 @@ ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d
     };
     if (sub === "search") {
       const q = positional.slice(1).join(" ") || die("usage: refs search <words>");
-      const r = await get(`https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=${numFlag("limit") ?? 15}&gsrsearch=${encodeURIComponent(q)}&prop=imageinfo&iiprop=url|size|extmetadata&iiextmetadatafilter=LicenseShortName|DateTimeOriginal`);
+      const r = await get(`https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=${numFlag("limit") ?? 15}&gsrsearch=${encodeURIComponent(`${q} filetype:bitmap`)}&prop=imageinfo&iiprop=url|size|extmetadata&iiextmetadatafilter=LicenseShortName|DateTimeOriginal`);
       const j = (await r.json()) as { query?: { pages?: Record<string, { title: string; imageinfo?: { width: number; height: number; extmetadata?: Record<string, { value: string }> }[] }> } };
       const pages = Object.values(j.query?.pages ?? {});
       if (!pages.length) { console.log("no results; try fewer or different words (the Commons category name often works)"); return; }

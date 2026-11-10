@@ -7,7 +7,7 @@ import { z } from "zod";
 // layer below (rules → OSM tags → defaults).
 // ---------------------------------------------------------------------------
 
-export const MATERIALS = ["plaster", "brick", "concrete", "glass", "stone", "wood", "metal", "marble", "tile"] as const;
+export const MATERIALS = ["plaster", "brick", "concrete", "glass", "stone", "wood", "metal", "marble", "tile", "slate", "lead", "copper"] as const;
 export const ROOF_SHAPES = ["flat", "gabled", "hipped", "pyramidal", "skillion", "dome", "onion", "none"] as const;
 export const WINDOW_PATTERNS = ["grid", "bands", "curtain", "sparse", "arched", "none"] as const;
 export const GROUND_FLOORS = ["plain", "shopfront", "arcade", "glass"] as const;

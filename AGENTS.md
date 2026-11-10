@@ -103,7 +103,8 @@ go to section 7.
      visual evidence**, don't write a rule that only repeats OSM's tags; leave it and say so in a
      release note.
    - Check a rule with `render --highlight`, which fades out everything your drafts don't touch.
-   - A rule `label` is 3–120 characters. If a submitted rule turns out to reach too far,
+   - A rule `label` and each selector value are at most 120 characters (split long street lists
+     into several rules, or select on another tag). If a submitted rule turns out to reach too far,
      `npm run se -- withdraw <change id>` takes it back while you still hold the lease you
      submitted it under (before `release`); then submit a narrower one. After release, fix it
      with a new, narrower change instead.
@@ -120,7 +121,9 @@ go to section 7.
      ```
      `refs` handles Commons' rate limits and sizes for you, and prints the `sources` entry to cite.
      Also use web image search (Google Images etc.), the Wikipedia article (for dimensions),
-     official sites and Mapillary.
+     official sites and Mapillary. In Britain and Ireland, **Geograph** (geograph.org.uk) has a
+     photo of almost every street: each photo page links a direct image file you can download with
+     `curl` into `refs/` (cite the photo page, `"kind": "photo"`). Use it when Commons is slow.
    - **No usable photos?** Skip the building and say so in a release note. Never invent a look.
      OSM names can be misspelled, so also try nearby street names or the area name.
    - estimate height and floors. Count the floors in photos; floors × ~3.2 m (residential) or
@@ -166,6 +169,8 @@ go to section 7.
      massing and height, roofline (shape, dormers, chimneys, parapets), window rhythm and size,
      wall material and colour, ground floor. Fix them and re-render. Stop when what's left is
      ornament the kit can't express, usually after 2–3 rounds.
+   - Without `--heading`, a `--target` render tries 8 directions and picks the one that shows the
+     building best (it says which). Use that to check a building; pass the photo's heading to compare.
    - `--heading` is the compass direction the camera **looks**. With `--target` the camera stands on
      the opposite side, so `--heading 0` views the south face, looking north. Photos rarely have a
      bearing, so work it out from the street the photo was taken from.
@@ -186,6 +191,8 @@ go to section 7.
    npm run se -- submit     # safe to re-run: nothing is sent twice
    ```
    If something is rejected, the message says why. Fix it in `drafts.json` and submit again.
+   `validate` lists drafts that still need a photo compare; `submit --checked-only` sends the
+   rest and keeps those for later.
 7. **Finish the tile** with notes for whoever comes next:
    ```bash
    npm run se -- release --done --note "No photos of Nooria Rizvia mosque found on Commons or the web" --note "Rule #12 covers the bungalows"
@@ -193,7 +200,8 @@ go to section 7.
    Notes are optional: up to 8, each 3–500 characters. The server scores the tile's **completeness**: the share of notable buildings with a sourced
    description, and the share of ordinary buildings covered by a rule. At 70% or more the tile
    is **done**. Below that it stays in the queue as **needs-work** for someone to improve, and
-   your submitted work still counts. A landmark counts as described when its description covers
+   your submitted work still counts. Only building descriptions count for notable buildings;
+   rules count only for ordinary ones. A landmark counts as described when its description covers
    how it looks (facade, roof, ground floor, parts or towers) and has sources. Several smaller
    changes to the same building add up. Either way, move on: go back to 2.1.
    If you must stop in the middle, `submit` and then `npm run se -- release` (without `--done`).
@@ -243,18 +251,18 @@ recomputed from the floors, and the other way round.
 | `minHeight` | metres | bottom of the volume (for parts that float, such as overhangs or bridge buildings) |
 | `floors` | integer (0–250) | number of storeys (drives the window grid) |
 | `floorHeight` | metres (2–12; default 3.2, 6 for churches/mosques/historic) | storey height for windows |
-| `facade.material` | `plaster` `brick` `concrete` `glass` `stone` `wood` `metal` `marble` `tile` | wall texture |
+| `facade.material` | `plaster` `brick` `concrete` `glass` `stone` `wood` `metal` `marble` `tile` `slate` `lead` `copper` | wall texture |
 | `facade.color` | `#rrggbb` | dominant wall colour (sample it from the photos) |
 | `facade.trim` | `#rrggbb` | frames, slab lines, accents; also the deck colour around a dome |
 | `facade.windows.pattern` | `grid` `bands` `curtain` `sparse` `arched` `none` | `curtain` = glass tower, `bands` = ribbon windows |
 | `facade.windows.color` | `#rrggbb` | glass colour |
 | `facade.windows.density` | 0–1 | how much of each bay is window |
 | `facade.windows.bay` | metres (1–20, default 3.2) | horizontal window spacing |
-| `roof.shape` | `flat` `gabled` `hipped` `pyramidal` `skillion` `dome` `onion` `none` | gabled/hipped need a roughly rectangular footprint |
+| `roof.shape` | `flat` `gabled` `hipped` `pyramidal` `skillion` `dome` `onion` `none` | gabled/hipped need a roughly rectangular footprint (`validate` warns when they can't be drawn; then use rectangular `parts`) |
 | `roof.height` | metres above the wall top | |
 | `roof.color` | `#rrggbb` | |
-| `roof.material` | same values as `facade.material` | |
-| `roof.direction` | degrees from north | ridge direction (gabled) or downhill direction (skillion) |
+| `roof.material` | same values as `facade.material`: usually `slate`, `tile`, `lead` or `metal` | |
+| `roof.direction` | degrees from north | ridge direction (gabled) or downhill direction (skillion). Terraced houses on a north–south street have their ridge along the street: `direction: 0`. Without it the ridge runs along the footprint's longer side |
 | `groundFloor.kind` | `plain` `shopfront` `arcade` `glass` | ground-storey treatment |
 | `groundFloor.color`, `groundFloor.height` | `#rrggbb`, metres (2–12) | |
 | `towers` | array (see below) | minarets, spires, corner towers, chimneys, extra domes |
@@ -301,7 +309,7 @@ Parts example (a podium with a tower):
 ```
 
 `sources[].kind` is one of `photo`, `wikipedia`, `wikidata`, `wikimedia`, `mapillary`,
-`kartaview`, `osm`, `report`, `website`, `news`, `other`. Use `website` for heritage registers,
+`kartaview`, `osm`, `report`, `website`, `news`, `imagery` (from `npm run se -- imagery`), `other`. Use `website` for heritage registers,
 official pages and similar.
 
 ### 3.2 `rule`: style a whole area
@@ -373,7 +381,9 @@ is a big visual win for little effort.
 - **Open imagery:** `npm run se -- imagery` saves open aerial imagery of the whole tile, north up,
   cropped exactly to the tile, into `refs/`. In the Netherlands, France, Switzerland and Austria
   it's 8–30 cm and you can trace lawns and paving directly. In the US it's about 1–2 m.
-  Elsewhere it falls back to Sentinel-2 at 10 m, which only tells green from built-up, so use
+  Elsewhere (including the UK and Pakistan) it falls back to Sentinel-2 at 10 m, which only tells
+  green from built-up: you can't trace a quad from it. There, draw ground from photos (Commons
+  photos of the quad or square, tower and aerial views) and from OSM outlines, and use
   photos for the detail.
 - **Coordinates:** the imagery covers the tile's bbox (top of `buildings.md`) exactly, so pixel
   (px, py) of the 1024 px image is lon = W + (E − W)·px/1024, lat = N − (N − S)·py/1024.
@@ -442,7 +452,7 @@ exports one function. It can't import anything: everything comes in through `k` 
 `THREE` (three.js, for anything the kit doesn't cover).
 
 ```ts
-export default function (k, THREE) {
+export default function (k, THREE, params) {   // params: --params JSON, plus footprint etc. with --target
   const stone = k.materials.stone("#d6bf93");                 // sample colours from your photos
   const range = k.block({ w: 40, d: 9, floors: 3, floorHeight: 3.6, wall: stone,
                           windows: { style: "gothic" }, roof: "crenellated", plinth: true });
@@ -468,8 +478,11 @@ Typology models in rules only go on **ordinary** buildings. A building with its 
 or one OSM already models in 3D parts, keeps its own shape. Footprints that aren't roughly
 rectangular (L-shapes, courtyards) keep their described shape too. Models are turned so their
 front (−Z) faces the nearest street (a named pedestrian street counts when no road is within
-30 m). For narrow, deep plots such as shops, set `heading` (4.3): the side of the plot that faces
-that way becomes the front, and the model's width (X) is fitted along it.
+30 m). For narrow, deep plots such as shops and terraced houses, set `heading` (4.3): the side of the
+plot that faces that way becomes the front, and the model's width (X) is fitted along it. A street
+has two sides, so use two rules (or specs), one per side, each with its own `heading`: the
+direction from the houses towards the street. Check with `render --plan` that every front faces
+the street.
 
 Build it:
 
@@ -491,7 +504,7 @@ roofline match. Budget: typology models ≤ 30,000 triangles; landmarks ≤ 150,
 | `k.door(x, {d, w?, h?, arched?, color?})` | a door on the front face |
 | `k.tower({w, h, d?, round?, wall?, top?, topHeight?, topMaterial?, pinnacles?, windows?, x?, z?, base?})` | towers. `top`: `spire` `pyramid` `crenellated` `dome` `onion` `cupola` `flat` |
 | `k.dome({r, h?, onion?, lantern?, drum?, material?, drumMaterial?})` | domes and cupolas (place them with `k.at`) |
-| `k.roof.gabled/hipped/pyramid/mansard/flat({w, d, at, h?, overhang?, material?})` | roofs on their own, `at` = eaves height |
+| `k.roof.gabled/hipped/pyramid/mansard/flat({w, d, at, h?, overhang?, material?})` | roofs on their own, `at` = eaves height. The ridge runs along X; rotate the roof (or swap w/d) for a ridge along Z |
 | `k.crenellations(w, d, at)`, `k.pinnacles(w, d, at, h?)`, `k.arcade(len, h, {bays?})` | Gothic and collegiate details |
 | `k.prism(ring, y0, y1, mat, holes?)` | a solid from a plan outline, e.g. `params.footprint`: walls of the real shape |
 | `k.openingsAlong(ring, y, w, h, kind, {spacing?, edges?, fill?, surround?, mullions?})` | windows or doors along every edge of an outline, facing outwards. `kind`: `rect` `arch` `gothic` `ogee` `round` |

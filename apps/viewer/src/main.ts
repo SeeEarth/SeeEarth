@@ -185,6 +185,8 @@ function lookPoint(): THREE.Vector3 {
 // ---------------------------------------------------------------- render-mode targeting (used by `seeearth render`)
 const target = params.get("target");
 let framed = !target;
+/** Re-aim the render camera at the target from another heading (set once the target is framed). */
+let orbitTarget: ((heading: number) => void) | null = null;
 function tryFrameTarget(t: LoadedTile) {
   if (framed || !target) return;
   const b = t.buildings.get(target);
@@ -204,14 +206,18 @@ function tryFrameTarget(t: LoadedTile) {
   const fit = Math.max(radius * 1.25, h * 0.9) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   // --dist is honoured as given; the auto-fit keeps the camera outside the building.
   const dist = params.has("dist") ? num("dist", fit) : Math.max(fit, radius * 1.3);
-  controls.orbitTo(new THREE.Vector3(x, h * 0.4, z), num("heading", 30), num("pitch", -22), dist);
-  if (params.has("eye")) {
-    // photo matching from street level: put the camera at a fixed height, still facing the target
-    camera.position.y = num("eye", 1.7);
-    const look = new THREE.Vector3(x, Math.min(h * 0.5, camera.position.y + dist * 0.5), z);
-    const f = look.clone().sub(camera.position).normalize();
-    controls.yaw = Math.atan2(f.x, -f.z); controls.pitch = Math.asin(f.y);
-  }
+  orbitTarget = (heading: number) => {
+    controls.orbitTo(new THREE.Vector3(x, h * 0.4, z), heading, num("pitch", -22), dist);
+    if (params.has("eye")) {
+      // photo matching from street level: put the camera at a fixed height, still facing the target
+      camera.position.y = num("eye", 1.7);
+      const look = new THREE.Vector3(x, Math.min(h * 0.5, camera.position.y + dist * 0.5), z);
+      const f = look.clone().sub(camera.position).normalize();
+      controls.yaw = Math.atan2(f.x, -f.z); controls.pitch = Math.asin(f.y);
+    }
+    controls.update(0); camera.updateMatrixWorld();
+  };
+  orbitTarget(num("heading", 30));
   framed = true;
   (window as unknown as { __SEEEARTH_FRAMED__: boolean }).__SEEEARTH_FRAMED__ = true;
 }
@@ -642,8 +648,28 @@ function pointInLL(p: [number, number], ring: [number, number][]) {
  * Agent renders: a camera standing inside another building shows only a wall. With a target,
  * walk the camera towards it until it's in the open; either way report what happened.
  */
+/** Share of a coarse ray grid that hits the target (0–1). */
+function targetShare(): number {
+  if (!target) return 0;
+  camera.updateMatrixWorld();
+  let n = 0;
+  for (let i = 0; i < 16; i++) for (let j = 0; j < 10; j++) if (pickAt(((i + 0.5) / 16) * 2 - 1, ((j + 0.5) / 10) * 2 - 1)?.building.id === target) n++;
+  return n / 160;
+}
 function unblockCamera() {
-  const report: { insideOf: string | null; movedMetres: number } = { insideOf: buildingAt(camera.position), movedMetres: 0 };
+  // No --heading given: try 8 directions and keep the one that shows the target best
+  // (outside any other building, least hidden behind neighbours).
+  let autoHeading: number | null = null;
+  if (target && orbitTarget && !params.has("heading")) {
+    let best = { h: 30, score: -1 };
+    for (let h = 0; h < 360; h += 45) {
+      orbitTarget(h);
+      const score = buildingAt(camera.position) && buildingAt(camera.position) !== target ? 0 : targetShare();
+      if (score > best.score) best = { h, score };
+    }
+    orbitTarget(best.h); autoHeading = best.h;
+  }
+  const report: { insideOf: string | null; movedMetres: number; autoHeading?: number } = { insideOf: buildingAt(camera.position), movedMetres: 0, ...(autoHeading != null ? { autoHeading } : {}) };
   if (report.insideOf && target && report.insideOf !== target) {
     const b = [...world.tiles.values()].map((t) => t.buildings.get(target)).find(Boolean);
     if (b) {

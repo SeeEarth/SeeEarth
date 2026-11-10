@@ -1,6 +1,7 @@
 // Shared validation: the server runs exactly this, and so does `seeearth validate`.
 import { Change, LIMITS, type Change as ChangeT } from "./schema.js";
 import { type BaseTile, type LL, ringAreaM2, ringCentroid } from "./osm.js";
+import { orientedRectLL } from "./resolve.js";
 import { bboxIntersects, pointInBBox, type BBox } from "./tiles.js";
 
 export interface ValidationResult { ok: boolean; change?: ChangeT; errors: string[]; warnings: string[] }
@@ -103,6 +104,17 @@ export function validateChange(raw: unknown, base: BaseTile, opts: ValidateOptio
     if (!sel.length) errors.push("select.tags must have at least one tag (e.g. {\"building\":\"house\"})");
     else if (sel.every(([, v]) => v === "*" || v.startsWith("!"))) errors.push("select.tags must name at least one concrete value (e.g. \"building\": \"house|residential\"); \"*\" alone would restyle landmarks too");
     if (isEmptyDeep(c.set)) errors.push("set is empty");
+  }
+
+  if (c.kind === "building" && !c.spec.parts?.length && /^(gabled|hipped)$/.test(c.spec.roof?.shape ?? "")) {
+    const b = base.buildings.find((x) => x.id === c.target);
+    const ring = c.spec.footprint ?? b?.polygons.reduce((a, p) => (p.outer.length > a.outer.length ? p : a)).outer;
+    const holes = !c.spec.footprint && !!b?.polygons.some((p) => p.holes.length);
+    if (ring && ring.length > 3) {
+      const r = orientedRectLL(ring);
+      const fill = Math.abs(ringAreaM2(ring)) / Math.max(1e-6, 4 * r.hl * r.hw);
+      if (holes || fill <= 0.82) warnings.push(`this footprint isn't a rectangle (${Math.round(fill * 100)}% of its bounding box${holes ? ", with a courtyard" : ""}), so a ${c.spec.roof!.shape} roof will be drawn ${fill > 0.6 && !holes ? "as a pyramid" : "flat"}. For the real roof, split it into rectangular \`parts\` or build a model`);
+    }
   }
 
   if (c.kind === "ground") {

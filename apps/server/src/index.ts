@@ -312,8 +312,9 @@ app.post("/api/claim", async (c) => {
   // 2. About a third of the time, improve a partly finished tile nearby before opening new ground,
   //    so partial work keeps getting finished instead of waiting for the whole city to be covered.
   const partialNearby = () => env.DB.prepare(
-    "SELECT x, y FROM tiles WHERE status = 'needs_work' AND x BETWEEN ? AND ? AND y BETWEEN ? AND ? ORDER BY quality ASC LIMIT 20",
-  ).bind(center.x - R, center.x + R, center.y - R, center.y + R).all<{ x: number; y: number }>();
+    // (not tiles you yourself left partial in the last 6 hours: someone else should take them on)
+    "SELECT x, y FROM tiles WHERE status = 'needs_work' AND x BETWEEN ? AND ? AND y BETWEEN ? AND ? AND NOT (COALESCE(done_by, -1) = ? AND updated_at > ?) ORDER BY quality ASC LIMIT 20",
+  ).bind(center.x - R, center.x + R, center.y - R, center.y + R, who.id, now() - 6 * 3600_000).all<{ x: number; y: number }>();
   if (Math.random() < 0.33) {
     for (const r of near((await partialNearby()).results).slice(0, 5)) {
       const id = await tryLease(env, r, who.id, "build");
