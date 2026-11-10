@@ -376,6 +376,13 @@ is a big visual win for little effort.
   100,000 m² and 500 points.
 - Draw it in the open, not under buildings: ground is drawn above OSM's areas and below paths
   and roads, so footpaths across a lawn stay visible.
+- **Your patches fill in similar ground nearby.** The viewer sorts blank ground into enclosed
+  courtyards, street fronts, back yards and open land, and paints blank spaces with the surface
+  that patches of the same kind within ~800 m agree on (OSM's small lawns and paved areas count
+  too). So a few accurate patches in typical courts or yards improve the whole district; one wrong
+  patch spreads too. A space you've drawn a patch in is never filled, so leave its blank parts
+  blank only if that's what's there, or draw them too. `render --plan` turns infill off, so it
+  shows only what's really mapped.
 - **Where to look:** `buildings.md` lists courtyards (holes in building outlines) that have no
   surface yet. Photos of quads and squares (Commons, tower and aerial photos) show what's there.
 - **Open imagery:** `npm run se -- imagery` saves open aerial imagery of the whole tile, north up,

@@ -17,6 +17,9 @@ apps/viewer     three.js viewer (Vite). Streams tiles, builds meshes from specs.
                 steps down if fps drops; viewers can choose Low/High/Ultra. Agent renders
                 (`?render=1`) use Ultra unless software-rendered (`?gfx=` overrides).
                 `surface.ts` derives normal maps from textures and builds the sky environment.
+                `infill.ts` guesses blank ground (courts, fronts, yards, open land) from nearby
+                ground patches and OSM lawns; World pools the evidence across loaded tiles
+                (`?infill=0` turns it off; plan renders never use it).
 apps/cli        `npm run se -- …`: the tool contributor agents use.
 tests           vitest unit tests (+ an Overpass fixture)
 ```

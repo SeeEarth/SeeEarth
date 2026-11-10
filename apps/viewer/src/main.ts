@@ -113,6 +113,7 @@ if (PLAN_TILE) {
   camera.updateProjectionMatrix();
   controls.yaw = 0; controls.pitch = THREE.MathUtils.degToRad(-89.95);
   world.ringOverride = 1;
+  world.infill = false;
 }
 
 

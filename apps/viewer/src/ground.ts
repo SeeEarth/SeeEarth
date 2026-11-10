@@ -52,7 +52,7 @@ const AREA_COLOR = { water: "#557f98", green: "#7c8b5b", forest: "#56693f", sand
 const AREA_ORDER = { yard: 0.5, paved: 1, sand: 2, green: 3, forest: 4, water: 5 } as const;
 
 /** Contributor ground surfaces: default colour and texture. Drawn above OSM areas, below paths and roads. */
-const SURFACE_STYLE: Record<string, { color: string; texture: string }> = {
+export const SURFACE_STYLE: Record<string, { color: string; texture: string }> = {
   grass: { color: "#7c8b5b", texture: "grass" }, garden: { color: "#6f7d4c", texture: "grass" },
   flowerbed: { color: "#6b5a40", texture: "gravel" }, paving: { color: "#b8b0a0", texture: "paving" },
   cobbles: { color: "#8f877a", texture: "paving" }, asphalt: { color: "#6c6f74", texture: "asphalt" },
@@ -62,7 +62,7 @@ const GROUND_ORDER = 5.5;
 
 const AREA_SURFACE: Record<keyof typeof AREA_COLOR, string> = { water: "water", green: "grass", forest: "grass", sand: "gravel", paved: "paving", yard: "garden" };
 
-class Layers {
+export class Layers {
   private m = new Map<string, { pos: number[]; order: number; surface: string }>();
   /** surface: a textured ground kind (paving, asphalt, grass…) or "flat" for plain paint. */
   add(color: string, order: number, surface = "flat") {

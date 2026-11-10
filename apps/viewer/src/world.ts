@@ -10,6 +10,7 @@ import { fetchTile, API } from "./api";
 import { buildBuildings } from "./buildings";
 import { buildGround } from "./ground";
 import { buildTrees } from "./trees";
+import { analyseTile, buildInfill, type InfillAnalysis, type InfillGuess } from "./infill";
 import type { Projector } from "./geo";
 
 export interface LoadedTile {
@@ -22,6 +23,8 @@ export interface LoadedTile {
   /** Building and model meshes in this tile (for picking/collisions). */
   solids: THREE.Mesh[];
   center: THREE.Vector3;
+  /** Guessed ground for unmapped open space (see infill.ts). */
+  infill?: { analysis: InfillAnalysis; meshes: THREE.Object3D[]; guesses: InfillGuess[] };
 }
 
 declare global {
@@ -55,6 +58,8 @@ export class World {
   tiles = new Map<string, LoadedTile>();
   /** Fixed number of tile rings to load around the view (plan renders only need neighbours). */
   ringOverride: number | null = null;
+  /** Fill unmapped open ground from nearby patches (off for plan renders: they show what's really mapped). */
+  infill = new URLSearchParams(location.search).get("infill") !== "0";
   private pending = new Set<string>();
   private failed = new Map<string, number>();
   root = new THREE.Group();
@@ -188,6 +193,13 @@ export class World {
     for (const b of resolved) if (b.asset) this.loadAsset(b, t);
     this.placeModels(resolved.filter((b) => b.model && !b.asset && !b.hidden), t);
     this.tiles.set(key, t);
+    if (this.infill) {
+      const analysis = analyseTile(bundle.base, resolved, ground, this.proj);
+      t.infill = { analysis, meshes: [], guesses: [] };
+      this.refreshInfill(t);
+      // new evidence: neighbours may now have a guess too
+      if (analysis.evidence.length) for (const o of this.tiles.values()) if (o !== t && o.infill && o.center.distanceTo(t.center) < 1400) this.refreshInfill(o);
+    }
     this.onTileLoaded(t);
   }
 
@@ -349,6 +361,16 @@ export class World {
   private fallbackVolumes(b: ResolvedBuilding, tile: LoadedTile) {
     const meshes = buildBuildings([{ ...b, model: undefined }], { proj: this.proj, renderer: this.renderer }).meshes();
     for (const m of meshes) { m.userData.tile = tile.key; m.geometry.computeBoundsTree(); tile.group.add(m); tile.solids.push(m); }
+  }
+
+  private refreshInfill(t: LoadedTile) {
+    const f = t.infill;
+    if (!f) return;
+    for (const m of f.meshes) { t.group.remove(m); disposeTree(m); }
+    const pool = [...this.tiles.values()].filter((o) => o.infill && o.center.distanceTo(t.center) < 1400).flatMap((o) => o.infill!.analysis.evidence);
+    const { meshes, guesses } = buildInfill(f.analysis, pool);
+    f.meshes = meshes; f.guesses = guesses;
+    for (const m of meshes) t.group.add(m);
   }
 
   private unload(t: LoadedTile) {
