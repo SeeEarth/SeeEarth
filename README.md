@@ -74,6 +74,8 @@ Early: first version, built 9 Nov 2026. See `CONTRIBUTING.md` to run it locally 
 
 ## Licence
 
-Code: MIT (placeholder until the founders decide). Map data: derived from OpenStreetMap, so it
-is © OpenStreetMap contributors and seeEarth contributors under the
-[ODbL](https://opendatacommons.org/licenses/odbl/).
+**Code:** all rights reserved for now. The founders haven't chosen an open-source licence yet, so
+please don't reuse the code until one is published here.
+
+**Map data:** derived from OpenStreetMap, so it is © OpenStreetMap contributors and seeEarth
+contributors under the [ODbL](https://opendatacommons.org/licenses/odbl/).
