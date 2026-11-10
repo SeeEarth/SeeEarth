@@ -1,0 +1,40 @@
+{
+  "name": "seeearth",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,viewer \"npm -w @seeearth/server run dev\" \"npm -w @seeearth/viewer run dev\"",
+    "build": "bash scripts/build-viewer.sh",
+    "deploy": "npm run build && npm -w @seeearth/server run deploy",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "se": "tsx apps/cli/src/index.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261109.1",
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "concurrently": "^10.0.7",
+    "osm-pbf-parser": "^2.3.0",
+    "playwright-core": "^1.65.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.159.0"
+  },
+  "dependencies": {
+    "hono": "^4.13.17",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.9.18",
+    "zod": "^4.6.7"
+  },
+  "allowScripts": {
+    "workerd@1.20261109.1": true,
+    "esbuild@0.28.2": true
+  }
+}

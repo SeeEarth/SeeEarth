@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>seeEarth</title>
+  <meta name="description" content="An open 3D model of the whole planet, built by people pointing their AI agents at it.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232e6f8e'/><path d='M7 18h5v-6h4v9h4v-12h4v9' stroke='white' stroke-width='2.4' fill='none'/></svg>">
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <header id="top" class="ui">
+    <div class="brand"><span class="logo">see<b>Earth</b></span><span id="stats" class="muted">…</span></div>
+    <form id="search"><input id="q" type="search" placeholder="Go to a place…" autocomplete="off"></form>
+  </header>
+  <nav id="actions" class="ui">
+    <button id="contribute" class="primary">Contribute</button>
+    <button id="lb">Leaderboard</button>
+    <span id="modes"><button data-mode="explore">Explore</button><button data-mode="walk">Walk</button><button data-mode="fly">Fly</button></span>
+    <button id="report">Report</button>
+    <button id="export" title="Download the tile you're looking at as .glb">Export</button>
+    <button id="gfx" title="Switch graphics quality">Graphics: High</button>
+  </nav>
+  <aside id="panel" class="ui" hidden></aside>
+  <div id="credit" class="ui" hidden></div>
+  <div id="crosshair" class="ui"></div>
+  <footer class="ui">
+    <span id="where"></span>
+    <span class="attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> &amp; seeEarth contributors · ODbL</span>
+  </footer>
+  <div id="help" class="ui muted">drag to look · WASD move · Q/E down/up · Shift fast · click a building</div>
+  <div id="loading" class="ui" hidden>loading map…</div>
+  <div id="toast" class="ui" hidden></div>
+  <div id="activity" class="ui" hidden></div>
+  <div id="modal" class="ui" hidden></div>
+  <script type="module" src="/src/boot.ts"></script>
+</body>
+</html>

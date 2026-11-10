@@ -1,0 +1,12 @@
+.dev/
+node_modules/
+dist/
+.wrangler/
+work/
+renders/
+.DS_Store
+*.log
+.dev.vars
+dist-next/
+dist-old/
+apps/viewer/public/models/
