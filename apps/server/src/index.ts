@@ -808,9 +808,15 @@ app.get("/api/media/*", async (c) => {
 app.post("/api/changes/:id/withdraw", async (c) => {
   const who = await me(c);
   const id = Number(c.req.param("id"));
-  const ch = await c.env.DB.prepare("SELECT author, tile FROM changes WHERE id = ? AND status = 'live'").bind(id).first<{ author: number; tile: string }>();
+  const ch = await c.env.DB.prepare("SELECT author, tile, client_key FROM changes WHERE id = ? AND status = 'live'").bind(id).first<{ author: number; tile: string; client_key: string | null }>();
   if (!ch) throw new HttpError(404, `change #${id} doesn't exist or is already withdrawn`);
   if (ch.author !== who.id) throw new HttpError(403, `change #${id} isn't yours; flag it instead`);
+  // Only while you still hold the lease you submitted it under: once a tile is released (and
+  // scored and credited), its changes stand; correct them with a new change instead.
+  const lease = await requireLease(c, ch.tile, who.id, "build");
+  if (!ch.client_key?.includes(`:${lease.leaseId.slice(0, 8)}:`)) {
+    throw new HttpError(409, `change #${id} was submitted under an earlier lease of tile ${ch.tile}; it can't be withdrawn now. Submit a corrected change instead (or a narrower rule).`);
+  }
   await rateHit(c.env, `withdraw|${who.id}`, 3600_000, 60, 1, "too many withdrawals this hour");
   await c.env.DB.prepare(`UPDATE changes SET status = 'reverted', reverted_at = ?, seq = (SELECT MAX(seq) FROM changes) + id WHERE id = ?`).bind(now(), id).run();
   return c.json({ withdrawn: id });

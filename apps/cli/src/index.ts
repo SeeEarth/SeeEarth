@@ -539,15 +539,29 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       const framed = await page.evaluate(() => (window as any).__SEEEARTH_FRAMED__ === true || !new URLSearchParams(location.search).has("target"));
       const cam = await page.evaluate(() => (window as any).__SEEEARTH_CAMERA__ ?? null) as { insideOf: string | null; movedMetres: number; stillInside: string | null } | null;
       await page.screenshot({ path: out });
-      const seen = await page.evaluate(() => (window as any).__SEEEARTH_SEEN__?.() ?? null).catch(() => null) as { buildings: { id: string; share: number }[]; drafts: number[] } | null;
+      const seen = await page.evaluate(() => (window as any).__SEEEARTH_SEEN__?.() ?? null).catch(() => null) as { buildings: { id: string; share: number }[]; drafts: { i: number; share: number }[] } | null;
       return { ready, framed, errors, cam, seen };
     });
     if (status.cam?.movedMetres) console.error(`! the camera stood inside ${status.cam.insideOf}; moved it ${status.cam.movedMetres} m towards the target so the view isn't a wall. For an exact viewpoint use --lat/--lon/--alt (see AGENTS.md 4.4).`);
     else if (status.cam?.stillInside) console.error(`! the camera is INSIDE building ${status.cam.stillInside}: this picture shows its walls, not the view. Move the camera (--lat/--lon, or a smaller --dist).`);
-    const seenDrafts = (status.seen?.drafts ?? []).map((i) => validIdx[i]).filter((i) => i != null);
+    // Which drafts this render shows well enough to count as photo-checked:
+    //   --plan: ground patches only (it's compared with aerial imagery)
+    //   --target: that building's own drafts, plus rules and ground clearly visible on it
+    //   otherwise: drafts shaping something that fills at least 4% of the frame
+    const MIN_SHARE = 0.04;
+    const shown = (status.seen?.drafts ?? []).map((d) => ({ i: validIdx[d.i], share: d.share })).filter((d) => d.i != null);
+    const kindOf = (i: number) => (list[i] as { kind?: string }).kind;
+    const seenDrafts = shown.filter((d) => {
+      const k = kindOf(d.i);
+      if (flags.plan) return k === "ground";
+      if (target && (k === "building" || k === "asset")) return (list[d.i] as { target?: string }).target === target && d.share >= 0.01;
+      return k === "ground" || d.share >= MIN_SHARE;
+    }).map((d) => d.i);
     if (status.seen) {
       const top = status.seen.buildings.slice(0, 6).map((b) => `${b.id} ${Math.round(b.share * 100)}%`).join(", ");
+      const weak = shown.filter((d) => !seenDrafts.includes(d.i)).map((d) => d.i);
       console.log(`  in frame: ${top || "no buildings"}${seenDrafts.length ? ` · your drafts shown: ${seenDrafts.map((i) => `[${i}] ${draftLabel(list[i])}`).join(", ")}` : ""}`);
+      if (weak.length) console.log(`  also in frame but too small or off-target to count as checked: ${weak.map((i) => `[${i}]`).join(" ")}`);
       const share = target ? status.seen.buildings.find((b) => b.id === target)?.share : undefined;
       if (target && share == null) console.error(`! ${target} isn't visible in this frame (hidden behind something, or out of view): change --heading/--dist`);
       else if (target && share! < 0.04) console.error(`! ${target} fills only ${Math.round(share! * 100)}% of the picture: move closer or narrow --fov so the compare shows it properly`);
@@ -560,6 +574,8 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     if (ref) {
       if (!existsSync(ref) && existsSync(join(tileDir(key), ref))) ref = join(tileDir(key), ref); // relative to the tile folder
       if (!existsSync(ref)) die(`--compare: ${ref} not found (give a path relative to the tile folder, or an absolute path)`);
+      const refAbs = resolve(ref);
+      if (![join(tileDir(key), "refs"), join(tileDir(key), "reports")].some((d) => refAbs.startsWith(resolve(d) + "/"))) die("--compare: the reference must be a photo or image in this tile's refs/ (or reports/) folder");
       const mime = /\.png$/i.test(ref) ? "image/png" : /\.webp$/i.test(ref) ? "image/webp" : "image/jpeg";
       const a = `data:${mime};base64,${readFileSync(ref).toString("base64")}`, b = `data:image/png;base64,${readFileSync(out).toString("base64")}`;
       const cmp = out.replace(/\.png$/, "-compare.png");
@@ -578,7 +594,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
         const rec: CompareRecord = { at: Date.now(), ref: ref!.split("/").pop()!, image: cmp, ...(target ? { target } : {}), drafts: seenDrafts.map((i) => hash(list[i])), buildings: status.seen?.buildings.slice(0, 12) ?? [] };
         writeFileSync(comparesPath(key), JSON.stringify([...compares(key), rec], null, 1));
         if (seenDrafts.length) console.log(`  recorded: drafts ${seenDrafts.map((i) => `[${i}]`).join(" ")} have been checked against ${rec.ref}`);
-        else console.log("  (none of your drafts are visible in this frame, so this compare doesn't count for any of them)");
+        else console.log("  (this compare doesn't check any of your drafts: see AGENTS.md 2.2 step 5 for what counts)");
       }
     }
   },
@@ -599,7 +615,9 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       console.error("! refs/ is empty: descriptions written without looking at photos come out generic, and reviewers reject them. Use `npm run se -- refs search \"<name> <city>\"` and `refs get`.");
     }
     const checked = new Set(compares(key).flatMap((c) => c.drafts));
-    const unchecked = fresh.filter((x) => needsCompare(x.d) && !checked.has(x.h));
+    // invalid drafts can't be rendered, so they go to the server and come back with their errors
+    const base = context(key).base;
+    const unchecked = fresh.filter((x) => needsCompare(x.d) && !checked.has(x.h) && validateChange(x.d, base, { ruleMaxSpanDeg: lease.ruleMaxSpanDeg }).ok);
     if (unchecked.length) {
       die(`${unchecked.length} draft(s) haven't been checked against a photo yet:
 ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d)}`).join("\n")}${unchecked.length > 12 ? `\n    … and ${unchecked.length - 12} more` : ""}
@@ -869,7 +887,12 @@ ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d
   /** Take back one of your own submitted changes (e.g. a rule that reached too far). */
   async withdraw() {
     const id = Number(positional[0]?.replace(/^#/, "")) || die("usage: withdraw <change id>   (ids are printed by submit, e.g. change #742)");
-    await api(`/api/changes/${id}/withdraw`, { method: "POST", json: {} });
+    // the change's tile is the one whose submitted.json lists it; withdraw needs that tile's live lease
+    const tiles = existsSync(WORK) ? readdirSync(WORK).filter((x) => /^\d+-\d+$/.test(x)) : [];
+    const home = tiles.find((d) => readJSON<Submitted[]>(join(tileDir(d), "submitted.json"), []).some((x) => x.id === id));
+    const lease = home ? leaseOf(home) : null;
+    if (!home || !leaseLive(lease)) die(`withdraw works only for changes you submitted under the lease you hold now (before release). For older ones, submit a corrected change.`);
+    await api(`/api/changes/${id}/withdraw`, { method: "POST", json: {}, lease: lease!.leaseId });
     for (const d of existsSync(WORK) ? readdirSync(WORK).filter((x) => /^\d+-\d+$/.test(x)) : []) {
       const p = join(tileDir(d), "submitted.json"), sub = readJSON<Submitted[]>(p, []);
       if (sub.some((x) => x.id === id)) writeFileSync(p, JSON.stringify(sub.filter((x) => x.id !== id), null, 1));

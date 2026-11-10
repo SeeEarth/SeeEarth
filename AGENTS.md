@@ -104,8 +104,9 @@ go to section 7.
      release note.
    - Check a rule with `render --highlight`, which fades out everything your drafts don't touch.
    - A rule `label` is 3–120 characters. If a submitted rule turns out to reach too far,
-     `npm run se -- withdraw <change id>` takes it back (only your own changes); then submit a
-     narrower one.
+     `npm run se -- withdraw <change id>` takes it back while you still hold the lease you
+     submitted it under (before `release`); then submit a narrower one. After release, fix it
+     with a new, narrower change instead.
 3. **Notable buildings, top of `buildings.md` down.** For true landmarks, build a model and match
    it against photos (section 4.4). For the rest, a sourced description is fine. These are anything with a name, a
    `wikidata` tag, or a large area: mosques, churches, towers, malls, stations, universities,
@@ -152,9 +153,15 @@ go to section 7.
    npm run se -- render --target w123456 --heading 30 --pitch -20 --compare refs/front.jpg
    ```
    This writes `renders/…-compare.png` (photo left, seeEarth right) and records which of your
-   drafts were visible in the frame. **`submit` refuses any draft that no compare has shown**, and
-   editing a draft after its compare needs a new one. For an area rule, compare one street it
-   covers. Name-only changes need no compare.
+   drafts it checked. **`submit` refuses any valid draft that no compare has checked**, and editing
+   a draft after its compare needs a new one. What counts:
+   - with `--target`: that building's drafts, plus rules and ground patches clearly in view;
+   - without: drafts shaping something that fills at least 4% of the picture (for an area rule,
+     compare one street it covers);
+   - `--plan`: ground patches only.
+
+   The reference must be in the tile's `refs/` (or `reports/`) folder. Name-only changes need no
+   compare.
    - Open the compare image, then write down the **3–5 biggest differences**, in this order:
      massing and height, roofline (shape, dormers, chimneys, parapets), window rhythm and size,
      wall material and colour, ground floor. Fix them and re-render. Stop when what's left is

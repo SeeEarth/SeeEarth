@@ -13,5 +13,6 @@ export function createAO(renderer: THREE.WebGLRenderer, scene: THREE.Scene, came
   gtao.blendIntensity = 0.9;
   composer.addPass(gtao);
   composer.addPass(new OutputPass());
-  return { render: () => composer.render(), setSize: (w: number, h: number) => composer.setSize(w, h) };
+  // the composer copies the pixel ratio when built: refresh it so graphics-level changes apply
+  return { render: () => composer.render(), setSize: (w: number, h: number) => { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(w, h); } };
 }

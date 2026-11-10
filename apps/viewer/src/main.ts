@@ -543,8 +543,9 @@ async function pollLive() {
       } else if (world.tiles.has(ch.tile)) dirty.add(ch.tile);
     }
     for (const key of dirty) await world.refresh(key);
-    for (const ch of r.changes) { pushActivity(ch); highlight(ch); }
-    const seen = r.changes.filter((ch) => dirty.has(ch.tile) || ch.change.kind === "rule");
+    const fresh = r.changes.filter((ch) => ch.status === "live"); // withdrawn/reverted: just redraw
+    for (const ch of fresh) { pushActivity(ch); highlight(ch); }
+    const seen = fresh.filter((ch) => dirty.has(ch.tile) || ch.change.kind === "rule");
     if (seen.length) {
       const who = [...new Set(seen.map((ch) => ch.author))].slice(0, 2).join(" & ");
       const what = seen.find((ch) => ch.change.kind === "building" && (ch.change as { spec: { name?: string } }).spec.name);
@@ -665,13 +666,13 @@ function unblockCamera() {
 /** Which buildings are actually visible in the frame, and which of the agent's drafts shaped them. */
 function seenInFrame() {
   camera.updateMatrixWorld();
-  const buildings = new Map<string, number>(), drafts = new Set<number>();
+  const buildings = new Map<string, number>(), draftHits = new Map<number, number>(), drafts = new Set<number>();
   const N = 40, M = 26;
   for (let i = 0; i < N; i++) for (let j = 0; j < M; j++) {
     const p = pickAt(((i + 0.5) / N) * 2 - 1, ((j + 0.5) / M) * 2 - 1);
     if (!p) continue;
     buildings.set(p.building.id, (buildings.get(p.building.id) ?? 0) + 1);
-    for (const l of p.building.layers) if ("id" in l && typeof l.id === "number" && l.id >= 1e9) drafts.add(l.id - 1e9);
+    for (const l of p.building.layers) if ("id" in l && typeof l.id === "number" && l.id >= 1e9) draftHits.set(l.id - 1e9, (draftHits.get(l.id - 1e9) ?? 0) + 1);
   }
   // ground drafts aren't pickable: they count as shown when part of them is in view and in the open
   const injected = (window as unknown as { __SEEEARTH_DRAFT__?: { changes: { kind: string; area?: [number, number][] }[] } }).__SEEEARTH_DRAFT__?.changes ?? [];
@@ -692,7 +693,11 @@ function seenInFrame() {
   });
   // share of the frame each building fills (0–1), biggest first
   const share = [...buildings].sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ id, share: Math.round((n / (N * M)) * 1000) / 1000 }));
-  return { buildings: share, drafts: [...drafts].sort((a, b) => a - b) };
+  // per draft: the share of the frame filled by buildings it shapes (ground patches in view: 1)
+  const out = new Map<number, number>();
+  for (const [i, n] of draftHits) out.set(i, Math.round((n / (N * M)) * 1000) / 1000);
+  for (const i of drafts) out.set(i, 1);
+  return { buildings: share, drafts: [...out].sort((a, b) => a[0] - b[0]).map(([i, s]) => ({ i, share: s })) };
 }
 Object.assign(window, { __SEEEARTH_SEEN__: () => seenInFrame() });
 

@@ -2,7 +2,7 @@
 // Drawn as instanced low-poly trees (two shapes), so thousands cost a few draw calls.
 import * as THREE from "three";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
-import { hashString, type BaseTile, type Polygon } from "@seeearth/core";
+import { hashString, type BaseTile, type Polygon, type ResolvedGround } from "@seeearth/core";
 import type { Projector } from "./geo";
 
 type P2 = [number, number];
@@ -56,7 +56,11 @@ function inPoly(p: P2, ring: P2[]): boolean {
 
 interface TreeSpot { x: number; z: number; h: number; conifer: boolean; tint: number }
 
-export function buildTrees(base: BaseTile, proj: Projector): THREE.Object3D[] {
+export function buildTrees(base: BaseTile, proj: Projector, ground: ResolvedGround[] = []): THREE.Object3D[] {
+  // no scattered trees on contributors' paved/gravel/water patches or on OSM's paved areas
+  const bare = [...ground.filter((g) => !["grass", "garden"].includes(g.surface)).map((g) => g.area),
+    ...base.areas.filter((a) => a.kind === "paved" || a.kind === "water" || a.tags.leisure === "pitch").flatMap((a) => a.polygons.map((p) => p.outer))]
+    .map((r) => r.map((q) => proj.xz(q as [number, number])));
   const spots: TreeSpot[] = [];
   const r = rng(hashString(base.tile));
   const add = (x: number, z: number, conifer = false, h = 7 + r() * 7) => spots.push({ x, z, h, conifer, tint: r() });
@@ -105,6 +109,7 @@ export function buildTrees(base: BaseTile, proj: Projector): THREE.Object3D[] {
         if (buildingRings.some((b) => inPoly([px, pz], b))) continue;
         if (a.kind !== "forest" && r() < (a.kind === "yard" ? 0.55 : 0.35)) continue; // leave clearings in parks
         if (a.kind === "yard" && roadCells.has(cell(px, pz))) continue;
+        if (bare.some((r) => inPoly([px, pz], r))) continue;
         add(px, pz, a.kind === "forest" && r() < 0.35);
       }
       if (spots.length > 4000) break;

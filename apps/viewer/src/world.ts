@@ -177,8 +177,9 @@ export class World {
       m.userData.tile = key; group.add(m);
       m.geometry.computeBoundsTree();   // fast picking & collisions
     }
-    for (const g of buildGround(bundle.base.roads, bundle.base.rails, bundle.base.areas, this.proj, resolveGround(changes))) group.add(g);
-    for (const t of buildTrees(bundle.base, this.proj)) group.add(t);
+    const ground = resolveGround(changes);
+    for (const g of buildGround(bundle.base.roads, bundle.base.rails, bundle.base.areas, this.proj, ground)) group.add(g);
+    for (const t of buildTrees(bundle.base, this.proj, ground)) group.add(t);
     const buildings = new Map(resolved.map((b) => [b.id, b]));
     this.root.add(group);
     const [w, s0, e, n] = bundle.base.bbox;
