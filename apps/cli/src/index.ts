@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import {
-  hullLL, inspectGlb, isNotable, LIMITS, lonLatToTile, ringAreaM2, tileKey, notability, parseTileKey, pointInRing, ruleMatches, tileCenter, tileQuality, validateChange,
+  hullLL, resolveGround, ringCentroid, tileBBox, inspectGlb, isNotable, LIMITS, lonLatToTile, ringAreaM2, tileKey, notability, parseTileKey, pointInRing, ruleMatches, tileCenter, tileQuality, validateChange,
   type RuleChange, type BaseTile, type ClaimResponse, type ReportInfo, type StoredChange, type TileBundle, type TileNote,
 } from "@seeearth/core";
 
@@ -188,6 +188,9 @@ ${[...tagCounts].sort((a, b) => b[1] - a[1]).map(([v, n]) => `\`${untrusted(v, 6
 ## Area rules already covering this tile
 ${rules.length ? rules.map((r) => `- #${r.id} by ${untrusted(r.author, 40)} (matches ${base.buildings.filter((b) => ruleMatches(r.change as RuleChange, b)).length} of this tile's ${base.buildings.length} buildings): "${untrusted((r.change as { label: string }).label, 120)}" select ${untrusted(JSON.stringify((r.change as { select: unknown }).select), 200)} set ${untrusted(JSON.stringify((r.change as { set: unknown }).set), 300)}`).join("\n") : "none yet"}
 
+## Ground: courtyards, lawns, squares (AGENTS.md 3.4)
+${groundSection(base, bundle.changes)}
+
 ## Buildings, most notable first${rest.length ? ` (top ${LIST_MAX} of ${list.length})` : ""}
 "outline (has OSM 3D parts)": OSM already models this building as separate parts. A spec on the outline
 passes facade/roof colours, materials, window style and storey height down to all parts (and can add towers).
@@ -199,6 +202,37 @@ ${rows.join("\n")}
 ${rest.length ? `\nNot listed (ordinary; cover them with rules): ${[...restSummary].map(([v, n]) => `building=${untrusted(v, 40)} ×${n}`).join(", ")}\n` : ""}`;
   writeFileSync(join(dir, "buildings.md"), md);
 }
+
+/** Existing ground patches, and courtyards (holes in building outlines) that have no surface yet. */
+function groundSection(base: BaseTile, changes: StoredChange[]): string {
+  const ground = resolveGround(changes);
+  const covered = (p: [number, number]) => ground.some((g) => pointInRing(p, g.area));
+  const yards: string[] = [];
+  for (const b of base.buildings) for (const poly of b.polygons) for (const h of poly.holes) {
+    const a = Math.abs(ringAreaM2(h));
+    if (a < 60) continue;
+    const c = ringCentroid(h);
+    if (!covered(c)) yards.push(`- courtyard of ${b.id}${b.tags.name ? ` (${cell(b.tags.name, 50)})` : ""}: ${Math.round(a)} m² at ${c[1].toFixed(6)}, ${c[0].toFixed(6)}`);
+  }
+  return [
+    ground.length ? ground.map((g) => `- ${g.id} "${untrusted(g.label, 80)}": ${g.surface} by ${untrusted(g.author, 40)}`).join("\n") : "no ground patches yet",
+    yards.length ? `\nCourtyards without a surface (OSM draws them as holes in buildings):\n${yards.slice(0, 40).join("\n")}` : "",
+    "\nOpen imagery of this tile: `npm run se -- imagery`; compare with `npm run se -- render --plan --compare refs/imagery-<source>.jpg`.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------- open aerial / satellite imagery
+// Only imagery whose licence allows building map data from it. NOT Google, Bing, Esri, Mapbox or
+// Apple imagery: their terms forbid it (Bing/Esri permission covers OpenStreetMap only).
+interface ImagerySource { id: string; name: string; bbox: [number, number, number, number]; maxZoom: number; url: string; licence: string; attribution: string; page: string }
+const IMAGERY: ImagerySource[] = [
+  { id: "nl-pdok", name: "PDOK aerial photo (Netherlands, ~8–25 cm)", bbox: [3.2, 50.7, 7.3, 53.6], maxZoom: 19, url: "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg", licence: "CC BY 4.0", attribution: "Beeldmateriaal Nederland / PDOK", page: "https://www.pdok.nl/introductie/-/article/luchtfoto-pdok" },
+  { id: "ch-swisstopo", name: "swisstopo SWISSIMAGE (Switzerland, 10–25 cm)", bbox: [5.9, 45.8, 10.5, 47.9], maxZoom: 19, url: "https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg", licence: "swisstopo open data (free use with attribution)", attribution: "© swisstopo", page: "https://www.swisstopo.admin.ch/en/orthoimage-swissimage-10" },
+  { id: "at-basemap", name: "basemap.at orthophoto (Austria, ~30 cm)", bbox: [9.5, 46.3, 17.2, 49.1], maxZoom: 19, url: "https://mapsneu.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg", licence: "CC BY 4.0", attribution: "basemap.at", page: "https://basemap.at" },
+  { id: "fr-ign", name: "IGN BD ORTHO (France, ~20 cm)", bbox: [-5.2, 41.3, 9.6, 51.1], maxZoom: 19, url: "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}", licence: "Licence Ouverte / Open Licence 2.0", attribution: "IGN – BD ORTHO", page: "https://geoservices.ign.fr/bdortho" },
+  { id: "us-usgs", name: "USGS The National Map imagery (USA, ~1–2 m)", bbox: [-125, 24, -66, 50], maxZoom: 16, url: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}", licence: "public domain", attribution: "USGS The National Map", page: "https://www.usgs.gov/programs/national-geospatial-program/national-map" },
+  { id: "eox-s2-2016", name: "Sentinel-2 cloudless 2016 by EOX (worldwide, 10 m: big areas only)", bbox: [-180, -85, 180, 85], maxZoom: 14, url: "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg", licence: "CC BY 4.0", attribution: "EOxCloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016)", page: "https://cloudless.eox.at" },
+];
 
 const MEDIA_EXT = /\.(jpg|png|webp|mp4|mov|webm)$/;
 async function saveReportMedia(key: string, reports: ReportInfo[]) {
@@ -304,8 +338,8 @@ const compares = (key: string) => readJSON<CompareRecord[]>(comparesPath(key), [
 /** Changes that don't alter how anything looks (names, hiding) need no photo compare. */
 function needsCompare(d: unknown): boolean {
   const o = d as { kind?: string; spec?: Record<string, unknown> };
-  if (o?.kind === "asset") return true;
-  if (o?.kind !== "building") return o?.kind === "rule";
+  if (o?.kind === "asset" || o?.kind === "rule" || o?.kind === "ground") return true;
+  if (o?.kind !== "building") return false;
   return Object.keys(o.spec ?? {}).some((k) => !["name", "hidden"].includes(k));
 }
 
@@ -339,7 +373,8 @@ async function withBrowser<T>(fn: (page: import("playwright-core").Page) => Prom
   try { ({ chromium } = await import("playwright-core")); } catch { die("this needs playwright-core: run `npm install` in the repo"); }
   const launchOpts = { headless: true, args: await browserArgs(chromium) };
   const browser = await chromium.launch({ ...launchOpts, channel: "chrome" }).catch(() => chromium.launch(launchOpts)).catch(() => die("no Chrome/Chromium found; install Google Chrome or run `npx playwright install chromium`"));
-  try { return await fn(await browser.newPage({ viewport: { width: numFlag("width") ?? 1280, height: numFlag("height") ?? 800 } })); }
+  const square = flags.plan && cmd === "render";
+  try { return await fn(await browser.newPage({ viewport: { width: numFlag("width") ?? (square ? 1024 : 1280), height: numFlag("height") ?? (square ? 1024 : 800) } })); }
   finally { await browser.close(); }
 }
 
@@ -356,7 +391,9 @@ const commands: Record<string, () => Promise<void>> = {
   context                        re-download the current tile into its work folder
   validate                       check drafts.json and show the completeness it would reach
   tile --lat N --lon E           which tile contains a point (then: claim --tile <key>)
+  imagery [--source id]          open aerial/satellite imagery of the tile into refs/ (for ground work; AGENTS.md 3.4)
   withdraw <change id>           take back one of your own submitted changes
+  render --plan [--compare refs/imagery-….jpg]   top-down view of the whole tile, north up
   render [--target w123] [--heading 30 --pitch -20 --dist 80 --fov 60 --eye 1.7] [--lat --lon --alt] [--out name.png] [--live] [--highlight] [--compare refs/photo.jpg]
                                  screenshot the 3D view (with your valid drafts) to compare with references.
                                  --heading = compass direction the camera LOOKS (camera stands on the opposite side);
@@ -477,16 +514,20 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       else if (fp) [lon, lat] = [fp.reduce((s, p) => s + p[0], 0) / fp.length, fp.reduce((s, p) => s + p[1], 0) / fp.length];
       else die(`unknown target ${target} (not in this tile, and no valid draft defines it)`);
       q.set("target", target);
+    } else if (flags.plan) {
+      // straight down over the whole tile, north up: lines up with `imagery` downloads
+      [lon, lat] = tileCenter(parseTileKey(key));
+      q.set("plan", "1");
     } else {
       [lon, lat] = numFlag("lon") != null ? [numFlag("lon")!, numFlag("lat")!] : tileCenter(parseTileKey(key));
       q.set("alt", String(numFlag("alt") ?? 250));
     }
     q.set("lon", String(lon)); q.set("lat", String(lat));
     for (const k of ["heading", "pitch", "dist", "fov", "eye"]) if (flag(k)) q.set(k, flag(k)!);
-    if (!flag("pitch") && !target) q.set("pitch", "-35");
+    if (!flag("pitch") && !target && !flags.plan) q.set("pitch", "-35");
     if (flags.highlight) q.set("highlight", "1");
     const outFlag = flag("out");
-    const out = outFlag && (outFlag.includes("/") || outFlag.includes("\\")) ? resolve(outFlag) : join(tileDir(key), "renders", outFlag ?? `${target ?? "overview"}-${flag("heading") ?? "30"}${flags.highlight ? "-highlight" : ""}.png`);
+    const out = outFlag && (outFlag.includes("/") || outFlag.includes("\\")) ? resolve(outFlag) : join(tileDir(key), "renders", outFlag ?? (flags.plan ? `plan${flags.highlight ? "-highlight" : ""}.png` : `${target ?? "overview"}-${flag("heading") ?? "30"}${flags.highlight ? "-highlight" : ""}.png`));
     mkdirSync(dirname(out), { recursive: true });
     console.error("… rendering (seconds with a GPU; up to 3 minutes on machines without one)");
     const status = await withBrowser(async (page) => {
@@ -526,7 +567,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
         await page.setViewportSize({ width: 1600, height: 620 });
         await page.setContent(`<body style="margin:0;background:#111;display:flex;gap:8px;font:14px sans-serif;color:#fff">
           <figure style="margin:0;flex:1"><img src="${a}" style="width:100%;height:580px;object-fit:contain"><figcaption>reference: ${ref!.split("/").pop()}</figcaption></figure>
-          <figure style="margin:0;flex:1"><img src="${b}" style="width:100%;height:580px;object-fit:contain"><figcaption>seeEarth render (heading ${flag("heading") ?? "30"}, pitch ${flag("pitch") ?? "-22"}, fov ${flag("fov") ?? 60})</figcaption></figure></body>`);
+          <figure style="margin:0;flex:1"><img src="${b}" style="width:100%;height:580px;object-fit:contain"><figcaption>seeEarth render (${flags.plan ? "plan view, north up" : `heading ${flag("heading") ?? "30"}, pitch ${flag("pitch") ?? "-22"}, fov ${flag("fov") ?? 60}`})</figcaption></figure></body>`);
         await page.waitForTimeout(200);
         await page.screenshot({ path: cmp });
       });
@@ -771,6 +812,58 @@ ${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d
     if (!seen.size) { console.log("no models used within 2 tiles yet"); return; }
     for (const [id, v] of seen) console.log(`#${id} ${v.label} by ${v.author} · ${v.keys.length} variant(s), fit ${v.fit ?? "stretch"}\n    assets: ${v.keys.join(" ")}`);
     console.log("\nReuse a typology set by putting its asset keys in your own rule's set.model.assets.");
+  },
+
+  /** Download open aerial/satellite imagery of the tile, cropped exactly to it (for render --plan compares). */
+  async imagery() {
+    const key = currentTile();
+    const t = parseTileKey(key);
+    const [w, s, e, n] = tileBBox(t);
+    const cx = (w + e) / 2, cy = (s + n) / 2;
+    const wanted = flag("source");
+    const cands = IMAGERY.filter((src) => (wanted ? src.id === wanted : cx >= src.bbox[0] && cx <= src.bbox[2] && cy >= src.bbox[1] && cy <= src.bbox[3]));
+    if (!cands.length) die(`no imagery source ${wanted}; choose from: ${IMAGERY.map((x) => x.id).join(", ")}`);
+    const UA = { "user-agent": "seeearth-agent/0.1 (open 3D map; contributor tool)" };
+    const dir = join(tileDir(key), "refs");
+    mkdirSync(dir, { recursive: true });
+    for (const src of cands) {
+      // our tiles are z16 web-mercator tiles: fetch the children at the source's best zoom (up to z18), or crop a parent
+      const z = Math.min(src.maxZoom, 18), k = 2 ** (z - 16);
+      const tiles: { x: number; y: number; b64: string; type: string }[] = [];
+      let ok = true;
+      const span = Math.max(1, k), x0 = k >= 1 ? t.x * k : Math.floor(t.x * k), y0 = k >= 1 ? t.y * k : Math.floor(t.y * k);
+      for (let dx = 0; dx < span && ok; dx++) for (let dy = 0; dy < span && ok; dy++) {
+        const url = src.url.replace("{z}", String(z)).replace("{x}", String(x0 + dx)).replace("{y}", String(y0 + dy));
+        const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(30_000) }).catch(() => null);
+        if (!r || !r.ok || !/^image\//.test(r.headers.get("content-type") ?? "")) { ok = false; break; }
+        tiles.push({ x: dx, y: dy, b64: Buffer.from(await r.arrayBuffer()).toString("base64"), type: r.headers.get("content-type")! });
+      }
+      if (!ok) { console.error(`… ${src.name}: no coverage here`); continue; }
+      // stitch (or crop) to exactly this tile, 1024 px, north up
+      const crop = k < 1 ? { size: 256 * k, ox: (t.x * k - x0) * 256, oy: (t.y * k - y0) * 256 } : null;
+      const jpg = await withBrowser(async (page) => page.evaluate(async ({ tiles, span, crop }) => {
+        const c = document.createElement("canvas"); c.width = c.height = 1024;
+        const g = c.getContext("2d")!;
+        const imgs = await Promise.all(tiles.map((tl) => new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = `data:${tl.type};base64,${tl.b64}`; })));
+        if (crop) g.drawImage(imgs[0], crop.ox, crop.oy, crop.size, crop.size, 0, 0, 1024, 1024);
+        else tiles.forEach((tl, i) => g.drawImage(imgs[i], (tl.x * 1024) / span, (tl.y * 1024) / span, 1024 / span, 1024 / span));
+        // reject blank/no-data tiles (uniform colour)
+        const d = g.getImageData(0, 0, 1024, 1024).data; let sum = 0, sq = 0, N = 0;
+        for (let i = 0; i < d.length; i += 4 * 97) { const v = d[i] + d[i + 1] + d[i + 2]; sum += v; sq += v * v; N++; }
+        const sd = Math.sqrt(sq / N - (sum / N) ** 2);
+        return sd < 4 ? null : c.toDataURL("image/jpeg", 0.88).split(",")[1];
+      }, { tiles, span, crop }));
+      if (!jpg) { console.error(`… ${src.name}: blank here`); continue; }
+      const out = join(dir, `imagery-${src.id}.jpg`);
+      writeFileSync(out, Buffer.from(jpg as string, "base64"));
+      const mpp = (((e - w) * 111320 * Math.cos((cy * Math.PI) / 180)) / (256 * Math.max(k, 1) * (k < 1 ? k : 1))).toFixed(1);
+      console.log(`✓ ${out}
+  ${src.name}: about ${mpp} m per pixel of source imagery · ${src.licence}
+  north is up; the image covers exactly this tile's bbox (buildings.md), like render --plan
+  cite it as: { "url": "${src.page}", "kind": "imagery", "note": "${src.attribution}" }
+  compare: npm run se -- render --plan --compare refs/imagery-${src.id}.jpg`);
+      if (!wanted && src.maxZoom >= 17) return; // a high-resolution source is enough
+    }
   },
 
   /** Take back one of your own submitted changes (e.g. a rule that reached too far). */

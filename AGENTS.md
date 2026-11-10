@@ -13,8 +13,12 @@ If you are a developer working on the codebase itself (not contributing map data
 - **Allowed reference sources:** web image search results (including Google Images), Wikipedia,
   Wikimedia Commons, Mapillary, KartaView, official and tourism websites, news photos, OSM data
   and tags, and photos or videos people attached to reports.
+- **Aerial and satellite imagery: only what `npm run se -- imagery` downloads.** Its sources are
+  open (national orthophotos with open licences, and Sentinel-2 cloudless 2016), so map data may be
+  built from them. Cite the source it prints.
 - **Not allowed:** Google Maps, Google Earth, Google Street View, Google's 3D map tiles, Apple
-  Maps / Look Around, or any other map provider's imagery or 3D data. Their terms forbid building
+  Maps / Look Around, Bing, Esri or Mapbox satellite imagery (their permission covers
+  OpenStreetMap only), or any other map provider's imagery or 3D data. Their terms forbid building
   maps from them. Do not open them. Do not copy 3D models from Sketchfab or other model stores
   unless they are clearly CC0 or CC BY and you credit them in `sources`.
 - Use photos only as **references**: you describe what you see (numbers, materials, colours).
@@ -335,6 +339,40 @@ npm run se -- upload-asset path/to/model.glb      # prints the assetKey
 ```
 
 The model replaces the procedural building. Render it to check its placement, scale and heading.
+
+### 3.4 `ground`: courtyards, lawns, squares and yards
+
+OSM maps parks and roads well but leaves most of the ground between buildings blank: college
+quads, back gardens, paved squares, yards. Blank ground renders as plain grey, so a `ground` patch
+is a big visual win for little effort.
+
+```json
+{ "kind": "ground", "target": "g:queens-front-quad-lawn", "label": "Queen's College front quad lawn",
+  "surface": "grass",
+  "area": [[-1.25145, 51.75292], [-1.25105, 51.75292], [-1.25105, 51.75312], [-1.25145, 51.75312]],
+  "holes": [[[-1.25128, 51.75299], [-1.25122, 51.75299], [-1.25122, 51.75305], [-1.25128, 51.75305]]],
+  "sources": [ { "url": "https://commons.wikimedia.org/wiki/File:…", "kind": "wikimedia" } ] }
+```
+
+- `surface`: `grass` `garden` `flowerbed` `paving` `cobbles` `asphalt` `gravel` `sand` `water`.
+  `color` (#rrggbb) is optional, for unusual stone or tarmac. `holes` cut out paths, beds or fountains.
+- `target` is a name you choose, `g:<slug>`. Submitting the same `g:` id again replaces the
+  patch; `"hidden": true` removes it. The patch belongs to the tile containing its centre; up to
+  100,000 m² and 500 points.
+- Draw it in the open, not under buildings: ground is drawn above OSM's areas and below paths
+  and roads, so footpaths across a lawn stay visible.
+- **Where to look:** `buildings.md` lists courtyards (holes in building outlines) that have no
+  surface yet. Photos of quads and squares (Commons, tower and aerial photos) show what's there.
+- **Open imagery:** `npm run se -- imagery` saves open aerial imagery of the whole tile, north up,
+  cropped exactly to the tile, into `refs/`. In the Netherlands, France, Switzerland and Austria
+  it's 8–30 cm and you can trace lawns and paving directly. In the US it's about 1–2 m.
+  Elsewhere it falls back to Sentinel-2 at 10 m, which only tells green from built-up, so use
+  photos for the detail.
+- **Coordinates:** the imagery covers the tile's bbox (top of `buildings.md`) exactly, so pixel
+  (px, py) of the 1024 px image is lon = W + (E − W)·px/1024, lat = N − (N − S)·py/1024.
+- **Check it:** `npm run se -- render --plan --compare refs/imagery-<source>.jpg` renders the tile
+  from straight above, north up, next to the imagery. Like every change, a ground patch must be
+  seen in a compare before `submit` accepts it (a street-level photo compare counts too).
 
 ## 4. Real 3D models (this is what makes the map look like the real place)
 

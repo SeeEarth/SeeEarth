@@ -525,7 +525,7 @@ app.post("/api/tiles/:key/changes", async (c) => {
     const v = validateChange(list[i], base, { ruleMaxSpanDeg });
     if (v.ok && v.change) {
       const ch = v.change;
-      const keys = ch.kind === "asset" ? [ch.assetKey] : (ch.kind === "rule" ? ch.set.model?.assets : ch.spec.model?.assets) ?? [];
+      const keys = ch.kind === "asset" ? [ch.assetKey] : ch.kind === "ground" ? [] : (ch.kind === "rule" ? ch.set.model?.assets : ch.spec.model?.assets) ?? [];
       for (const k of keys) {
         const a = await c.env.DB.prepare("SELECT 1 AS ok FROM assets WHERE key = ?").bind(k).first<{ ok: number }>();
         if (!a) { v.ok = false; v.errors.push(`model ${k.slice(0, 12)}… not found: upload it first (npm run se -- model build … --upload)`); }

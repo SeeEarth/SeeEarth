@@ -1,7 +1,7 @@
 // Layer resolution: OSM tags → scoped rules (broadest first) → per-building spec.
 // The most specific layer wins, field by field.
 import { pointInRing, ringAreaM2, type BaseBuilding, type LL, type Polygon } from "./osm.js";
-import type { AssetChange, BuildingSpec, Part, RuleChange, StoredChange, Style, Tower } from "./schema.js";
+import type { AssetChange, BuildingSpec, GroundChange, Part, RuleChange, StoredChange, Style, Tower } from "./schema.js";
 import { pointInBBox, type BBox } from "./tiles.js";
 
 export interface ResolvedVolume extends Required<Pick<Style, "height" | "minHeight" | "floorHeight">> {
@@ -378,5 +378,22 @@ export function circleRing(c: LL, radiusM: number, n = 14): LL[] {
   const out: LL[] = [];
   for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; out.push([c[0] + (Math.cos(a) * radiusM) / kx, c[1] + (Math.sin(a) * radiusM) / ky]); }
   out.push(out[0]);
+  return out;
+}
+
+// ---------------------------------------------------------------- ground surfaces
+
+export interface ResolvedGround { id: string; label: string; surface: string; area: LL[]; holes: LL[][]; color?: string; author: string; changeId: number }
+
+/** Contributor ground patches (g:…): the latest live change per id wins; hidden ones are dropped. */
+export function resolveGround(changes: StoredChange[]): ResolvedGround[] {
+  const latest = new Map<string, StoredChange>();
+  for (const c of changes) if (c.change.kind === "ground") latest.set(c.change.target, c);
+  const out: ResolvedGround[] = [];
+  for (const [id, c] of latest) {
+    const g = c.change as GroundChange;
+    if (g.hidden) continue;
+    out.push({ id, label: g.label, surface: g.surface, area: g.area as LL[], holes: (g.holes ?? []) as LL[][], ...(g.color ? { color: g.color } : {}), author: c.author, changeId: c.id });
+  }
   return out;
 }

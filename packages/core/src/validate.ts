@@ -27,10 +27,20 @@ const isEmptyDeep = (v: unknown): boolean =>
   v == null || (typeof v === "object" && !Array.isArray(v) && Object.values(v as object).every(isEmptyDeep));
 
 function vertexCount(c: ChangeT): number {
+  if (c.kind === "ground") return c.area.length + (c.holes ?? []).reduce((n, h) => n + h.length, 0);
   if (c.kind !== "building") return 0;
   const s = c.spec;
   return (s.footprint?.length ?? 0) + (s.parts ?? []).reduce((n, p) => n + p.footprint.length, 0)
     + (s.towers ?? []).reduce((n, t) => n + (Array.isArray(t.at) ? t.at.length : 0), 0);
+}
+
+function pointInRingLL(p: LL, ring: LL[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
 }
 
 export function validateChange(raw: unknown, base: BaseTile, opts: ValidateOptions = {}): ValidationResult {
@@ -93,6 +103,19 @@ export function validateChange(raw: unknown, base: BaseTile, opts: ValidateOptio
     if (!sel.length) errors.push("select.tags must have at least one tag (e.g. {\"building\":\"house\"})");
     else if (sel.every(([, v]) => v === "*" || v.startsWith("!"))) errors.push("select.tags must name at least one concrete value (e.g. \"building\": \"house|residential\"); \"*\" alone would restyle landmarks too");
     if (isEmptyDeep(c.set)) errors.push("set is empty");
+  }
+
+  if (c.kind === "ground") {
+    const cen = ringCentroid(c.area);
+    if (!pointInBBox(cen[0], cen[1], base.bbox)) errors.push("the ground area's centre is outside this tile (it belongs to the tile containing its centre)");
+    const area = Math.abs(ringAreaM2(c.area));
+    if (area < 4) errors.push(`area is ${area.toFixed(1)} m²: too small`);
+    if (area > 100_000) errors.push(`area is ${Math.round(area)} m² (max 100000): split it, or leave big parks to OSM`);
+    const pad = 0.01;
+    if (c.area.some(([lon, lat]) => lon < base.bbox[0] - pad || lon > base.bbox[2] + pad || lat < base.bbox[1] - pad || lat > base.bbox[3] + pad)) errors.push("area wanders more than ~1 km outside the tile");
+    // Most ground lies between buildings: warn if it mostly covers a building
+    const inside = base.buildings.filter((b) => !b.isPart && b.polygons.some((p) => pointInRingLL(cen, p.outer) && !p.holes.some((h) => pointInRingLL(cen, h))));
+    if (inside.length) warnings.push(`its centre is inside building ${inside[0].id}; ground goes in courtyards and open spaces, not under roofs`);
   }
 
   if (c.kind === "asset") {

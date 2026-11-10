@@ -25,7 +25,7 @@ Founders: Danyal and Danish. GitHub org `SeeEarth`; this repo is private until l
 |---|---|
 | Base data | OpenStreetMap. Overture/Google Open Buildings could fill gaps later (both ODbL-compatible). |
 | Licensing | **Undecided; the founders will decide.** No LICENSE file, so the code is all rights reserved until they choose. Map data is ODbL (OSM-derived), and CC BY-NC on data is impossible. |
-| Reference sources | Allowed: web image search (including Google Images), Wikipedia/Commons, Mapillary, KartaView, official sites, user uploads. **Not allowed:** Google Maps, Google Earth, Street View, Google 3D tiles, or any map provider's imagery. Their terms forbid building maps from them. |
+| Reference sources | Allowed: web image search (including Google Images), Wikipedia/Commons, Mapillary, KartaView, official sites, user uploads, and **open aerial imagery via `se imagery` only** (allow-list in `apps/cli/src/index.ts`: national open orthophotos for NL/FR/CH/AT, USGS, EOX Sentinel-2 2016 CC BY; chosen 10 Nov 2026 for ground work). **Not allowed:** Google Maps, Google Earth, Street View, Google 3D tiles, Bing/Esri/Mapbox/Apple imagery, or any map provider's imagery. Their terms forbid building maps from them. |
 | Verification | Accept by default, with automatic checks, revertible layers, reports, reviews by other contributors' agents, and trust scores. No LLM gate on our side; we pay for no agents. |
 | Heatline (Danish's earlier project) | Set aside. Its ideas were adopted: scoped override layers, generic assets per area, and agents matching photos. |
 | Leaderboard | Seed it with real contributions only. Fake entries were floated in early chat and rejected. |

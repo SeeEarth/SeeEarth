@@ -118,7 +118,7 @@ export const BuildingSpec = Style.extend({
 });
 export type BuildingSpec = z.infer<typeof BuildingSpec>;
 
-export const SOURCE_KINDS = ["photo", "wikipedia", "wikidata", "wikimedia", "mapillary", "kartaview", "osm", "report", "website", "news", "other"] as const;
+export const SOURCE_KINDS = ["photo", "wikipedia", "wikidata", "wikimedia", "mapillary", "kartaview", "osm", "report", "website", "news", "imagery", "other"] as const;
 export const Source = z.strictObject({
   url: z.string().url().max(2000),
   kind: z.enum(SOURCE_KINDS).optional(),
@@ -171,12 +171,34 @@ export const AssetChange = z.strictObject({
   note: z.string().max(1000).optional(),
 });
 
-export const Change = z.discriminatedUnion("kind", [BuildingChange, RuleChange, AssetChange]);
+/** Ground surfaces contributors can draw (courtyards, lawns, squares, yards). */
+export const SURFACES = ["grass", "garden", "paving", "cobbles", "asphalt", "gravel", "sand", "water", "flowerbed"] as const;
+/** Ground ids: g:<slug>. A later change to the same id replaces the earlier one. */
+export const GroundId = z.string().regex(/^g:[a-z0-9][a-z0-9-]{2,60}$/, "target must be g:<slug> (lowercase letters, digits and hyphens, e.g. g:queens-front-quad-lawn)");
+
+/** A patch of ground surface (lawn, paving, gravel…) drawn over the base map. */
+export const GroundChange = z.strictObject({
+  kind: z.literal("ground"),
+  target: GroundId,
+  label: z.string().min(3).max(120),
+  surface: z.enum(SURFACES),
+  /** Outline [lon, lat]; holes for beds, fountains or paths cut out of a lawn. */
+  area: Ring,
+  holes: z.array(Ring).max(30).optional(),
+  /** Remove this ground patch (e.g. a lawn that was paved over). */
+  hidden: z.boolean().optional(),
+  color: Hex.optional(),
+  sources: z.array(Source).max(20).default([]),
+  note: z.string().max(1000).optional(),
+});
+
+export const Change = z.discriminatedUnion("kind", [BuildingChange, RuleChange, AssetChange, GroundChange]);
 export type Change = z.infer<typeof Change>;
 export type ChangeInput = z.input<typeof Change>;
 export type BuildingChange = z.infer<typeof BuildingChange>;
 export type RuleChange = z.infer<typeof RuleChange>;
 export type AssetChange = z.infer<typeof AssetChange>;
+export type GroundChange = z.infer<typeof GroundChange>;
 
 /** A change as stored and served: payload plus provenance. */
 export interface StoredChange {

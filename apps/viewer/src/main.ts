@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { skyEnvironment } from "./surface";
 import { groundMaterial, GROUND_METRES } from "./textures";
-import { bboxIntersects, lonLatToTile, tileCenter, tileKey, type ResolvedBuilding, type StoredChange } from "@seeearth/core";
+import { bboxIntersects, lonLatToTile, parseTileKey, tileBBox, tileCenter, tileKey, type ResolvedBuilding, type StoredChange } from "@seeearth/core";
 import { Projector } from "./geo";
 import { Controls } from "./controls";
 import { Walker, Plane, type Input } from "./modes";
@@ -100,6 +100,20 @@ scene.add(world.root);
 const controls = new Controls(camera, canvas);
 controls.yaw = THREE.MathUtils.degToRad(num("heading", 20));
 controls.pitch = THREE.MathUtils.degToRad(num("pitch", -32));
+
+// Plan view (`render --plan`): straight down over one tile, north up, framed to the tile's exact
+// bounds, so it lines up with an aerial/satellite image of the same tile for comparison.
+const PLAN_TILE = params.get("plan") === "1" ? params.get("tile") : null;
+if (PLAN_TILE) {
+  const [w, s, e, n] = tileBBox(parseTileKey(PLAN_TILE));
+  const [x0, z0] = proj.xz([w, n]), [x1, z1] = proj.xz([e, s]);
+  const half = Math.max(x1 - x0, z1 - z0) / 2, alt = 1500;
+  camera.position.set((x0 + x1) / 2, alt, (z0 + z1) / 2);
+  camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(half / alt));
+  camera.updateProjectionMatrix();
+  controls.yaw = 0; controls.pitch = THREE.MathUtils.degToRad(-89.95);
+  world.ringOverride = 1;
+}
 
 
 // Ambient occlusion (soft contact shadows in corners and streets). Off in agent renders for speed
@@ -549,6 +563,12 @@ function highlight(ch: StoredChange) {
     flashChange(scene, { x: (x0 + x1) / 2, z: (z0 + z1) / 2, radius: Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0)) / 2, area: true });
     return;
   }
+  if (ch.change.kind === "ground") {
+    let x = 0, z = 0; for (const p of ch.change.area) { const [px, pz] = proj.xz(p as [number, number]); x += px; z += pz; }
+    x /= ch.change.area.length; z /= ch.change.area.length;
+    flashChange(scene, { x, z, radius: 12, area: true });
+    return;
+  }
   const b = t?.buildings.get((ch.change as { target: string }).target);
   if (!b) return;
   const [x, z] = proj.xz(b.centroid);
@@ -570,7 +590,7 @@ function renderFeed() {
   const ago = (t: number) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`; };
   el.innerHTML = `<div class="feed-title">Live</div>` + feed.map((f, i) => {
     const c = f.ch.change;
-    const what = c.kind === "rule" ? `area style “${c.label}”` : c.kind === "building" ? (c.spec.name ?? (c.spec.model ? "a 3D model" : "a building")) : "a 3D model";
+    const what = c.kind === "rule" ? `area style “${c.label}”` : c.kind === "ground" ? `the ground: ${c.label}` : c.kind === "building" ? (c.spec.name ?? (c.spec.model ? "a 3D model" : "a building")) : "a 3D model";
     return `<button data-i="${i}"><strong>${esc(f.ch.author)}</strong> ${c.kind === "rule" ? "restyled" : "updated"} ${esc(what)} <span class="muted">${ago(f.at)}</span></button>`;
   }).join("");
   el.querySelectorAll<HTMLButtonElement>("button").forEach((btn) => (btn.onclick = () => {
@@ -653,6 +673,23 @@ function seenInFrame() {
     buildings.set(p.building.id, (buildings.get(p.building.id) ?? 0) + 1);
     for (const l of p.building.layers) if ("id" in l && typeof l.id === "number" && l.id >= 1e9) drafts.add(l.id - 1e9);
   }
+  // ground drafts aren't pickable: they count as shown when part of them is in view and in the open
+  const injected = (window as unknown as { __SEEEARTH_DRAFT__?: { changes: { kind: string; area?: [number, number][] }[] } }).__SEEEARTH_DRAFT__?.changes ?? [];
+  injected.forEach((c, i) => {
+    if (c.kind !== "ground" || !c.area?.length) return;
+    let cx = 0, cz = 0; for (const p of c.area) { const [x, z] = proj.xz(p); cx += x; cz += z; }
+    const pts = [[cx / c.area.length, cz / c.area.length], ...c.area.map((p) => proj.xz(p))];
+    const visible = pts.some(([x, z]) => {
+      const v = new THREE.Vector3(x, 0.2, z), dist = v.distanceTo(camera.position);
+      if (dist > 2500) return false;
+      const ndc = v.clone().project(camera);
+      if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1 || ndc.z > 1) return false;
+      ray.set(camera.position, v.clone().sub(camera.position).normalize());
+      const hit = ray.intersectObjects(world.pickables(), false)[0];
+      return !hit || hit.distance > dist - 0.5; // nothing in front of it
+    });
+    if (visible) drafts.add(i);
+  });
   // share of the frame each building fills (0–1), biggest first
   const share = [...buildings].sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ id, share: Math.round((n / (N * M)) * 1000) / 1000 }));
   return { buildings: share, drafts: [...drafts].sort((a, b) => a - b) };

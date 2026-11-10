@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { enhanceMaterial } from "./surface";
 import {
-  bboxIntersects, hashString, lonLatToTile, orientedRectLL, parseTileKey, resolveBuildings, ringAreaM2, tileKey, tileRing,
+  bboxIntersects, hashString, lonLatToTile, resolveGround, orientedRectLL, parseTileKey, resolveBuildings, ringAreaM2, tileKey, tileRing,
   type BBox, type ResolvedBuilding, type StoredChange, type TileBundle,
 } from "@seeearth/core";
 import { fetchTile, API } from "./api";
@@ -53,6 +53,8 @@ function loadModel(key: string) {
 
 export class World {
   tiles = new Map<string, LoadedTile>();
+  /** Fixed number of tile rings to load around the view (plan renders only need neighbours). */
+  ringOverride: number | null = null;
   private pending = new Set<string>();
   private failed = new Map<string, number>();
   root = new THREE.Group();
@@ -68,7 +70,7 @@ export class World {
     const [lon, lat] = this.proj.lonLat(look.x, look.z);
     const c = lonLatToTile(lon, lat);
     const alt = cam.position.y;
-    const R = alt < 120 ? 1 : alt < 700 ? 2 : 3;
+    const R = this.ringOverride ?? (alt < 120 ? 1 : alt < 700 ? 2 : 3);
     const keys: string[] = [];
     for (let r = 0; r <= R; r++) for (const t of tileRing(c, r)) keys.push(tileKey(t));
     return keys;
@@ -175,7 +177,7 @@ export class World {
       m.userData.tile = key; group.add(m);
       m.geometry.computeBoundsTree();   // fast picking & collisions
     }
-    for (const g of buildGround(bundle.base.roads, bundle.base.rails, bundle.base.areas, this.proj)) group.add(g);
+    for (const g of buildGround(bundle.base.roads, bundle.base.rails, bundle.base.areas, this.proj, resolveGround(changes))) group.add(g);
     for (const t of buildTrees(bundle.base, this.proj)) group.add(t);
     const buildings = new Map(resolved.map((b) => [b.id, b]));
     this.root.add(group);

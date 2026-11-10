@@ -6,7 +6,7 @@
 // pavement), and major roads a dashed centre line. Layers are painted in a fixed order without
 // depth writes, so nothing z-fights; buildings still occlude them through the depth test.
 import * as THREE from "three";
-import type { BaseArea, BaseLine } from "@seeearth/core";
+import type { BaseArea, BaseLine, ResolvedGround } from "@seeearth/core";
 import type { Projector } from "./geo";
 import { flatMaterial, groundMaterial, GROUND_METRES } from "./textures";
 
@@ -49,6 +49,15 @@ function roadStyle(t: Record<string, string>): RoadStyle | null {
 
 const AREA_COLOR = { water: "#557f98", green: "#7c8b5b", forest: "#56693f", sand: "#d6c69a", paved: "#c3bcae" } as const;
 const AREA_ORDER = { paved: 1, sand: 2, green: 3, forest: 4, water: 5 } as const;
+
+/** Contributor ground surfaces: default colour and texture. Drawn above OSM areas, below paths and roads. */
+const SURFACE_STYLE: Record<string, { color: string; texture: string }> = {
+  grass: { color: "#7c8b5b", texture: "grass" }, garden: { color: "#6f7d4c", texture: "grass" },
+  flowerbed: { color: "#6b5a40", texture: "gravel" }, paving: { color: "#b8b0a0", texture: "paving" },
+  cobbles: { color: "#8f877a", texture: "paving" }, asphalt: { color: "#6c6f74", texture: "asphalt" },
+  gravel: { color: "#c9bc9c", texture: "gravel" }, sand: { color: "#d6c69a", texture: "gravel" }, water: { color: "#557f98", texture: "water" },
+};
+const GROUND_ORDER = 5.5;
 
 const AREA_SURFACE: Record<keyof typeof AREA_COLOR, string> = { water: "water", green: "grass", forest: "grass", sand: "gravel", paved: "paving" };
 
@@ -139,8 +148,21 @@ const bridgeLift = (t: Record<string, string>) => (t.bridge && t.bridge !== "no"
  * Build the flat layers for one tile. Features crossing tile edges are drawn by every tile
  * they touch (identical, overlapping pixels), so unloading a neighbour never leaves gaps.
  */
-export function buildGround(roads: BaseLine[], rails: BaseLine[], areas: BaseArea[], proj: Projector): THREE.Object3D[] {
+export function buildGround(roads: BaseLine[], rails: BaseLine[], areas: BaseArea[], proj: Projector, ground: ResolvedGround[] = []): THREE.Object3D[] {
   const L = new Layers();
+
+  // contributors' ground patches (courtyard lawns, paved squares, gravel yards…)
+  for (const g of ground) {
+    const st = SURFACE_STYLE[g.surface] ?? SURFACE_STYLE.paving;
+    const open = (r: [number, number][]) => (r.length > 1 && r[0][0] === r[r.length - 1][0] && r[0][1] === r[r.length - 1][1] ? r.slice(0, -1) : r);
+    const outer = open(g.area as [number, number][]).map((p) => proj.xz(p));
+    if (outer.length < 3) continue;
+    const holes = g.holes.map((h) => open(h as [number, number][]).map((p) => proj.xz(p))).filter((h) => h.length >= 3);
+    const tris = THREE.ShapeUtils.triangulateShape(outer.map(([x, z]) => new THREE.Vector2(x, z)), holes.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z))));
+    const all = [...outer, ...holes.flat()];
+    const pos = L.add(g.color ?? st.color, GROUND_ORDER, st.texture);
+    for (const [i, j, k] of tris) pos.push(all[i][0], 0, all[i][1], all[j][0], 0, all[j][1], all[k][0], 0, all[k][1]);
+  }
 
   for (const a of areas) {
     for (const poly of a.polygons) {
