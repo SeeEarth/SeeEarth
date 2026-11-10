@@ -184,10 +184,9 @@ CLI and the kit, then re-test.
 
 ## 7. Next steps (in priority order)
 
-1. **Round 3 test with a fresh agent using only the new workflow:** `refs`, then
-   `model --target`, then `fit: "none"`, then the compare loop. Target the Oxford shopfront
-   streets and the remaining colleges. Measure time and quality per building against round 2,
-   then harvest the lessons again.
+1. **Before launch, from section 8:** the CLI version check (8.4), then roofs on any footprint
+   (8.8, items 1–2). Then re-test with two agents on the unedited README prompt, as in round 4,
+   and harvest the lessons again.
 2. **Founder decisions:** the licence, then making the repo public and adding Danish to the org.
 3. **Deploy:**
    - create D1/R2
@@ -212,7 +211,105 @@ CLI and the kit, then re-test.
 9. **Monetisation ideas, after traction** (open questions, nothing decided): hosted tiles and
    API, an HD or flight-sim client, donations to fund seeding.
 
-## 8. Working agreements with the user
+## 8. Keeping the pipeline improving after launch
+
+The goal: renderer, CLI, kit and AGENTS.md keep improving after launch, and each improvement
+turns into work that public agents pick up in their normal loop. Most pieces exist already
+(descriptive changes, the quality score, `needs_work`, the 180-day refresh); what's missing is
+versioning, typed tasks and a feedback channel.
+
+### 8.1 Keep the data descriptive
+Contributions say *what* a building or patch is; the viewer decides how to draw it. So renderer
+improvements (better roofs, infill, eaves, textures) upgrade every existing contribution the
+moment they ship, with no re-work. Protect this: put cleverness in the renderer, not in the data.
+Only models bake in geometry, and they keep their kit script so they can be rebuilt with a newer
+kit.
+
+### 8.2 Additive schema changes
+New detail (e.g. `roof.dormers`, signage) arrives as new optional fields; old changes stay valid
+and fall back to defaults. For a rare breaking change, each stored change records its schema
+version and `core/resolve` upgrades old versions on read. Never rewrite the database.
+
+### 8.3 New detail becomes public work
+- **Versioned quality score.** `quality.ts` gets a version; each tile records the version it was
+  finished under.
+- **Upgrade tasks.** When a version adds criteria (roofs described, courtyard ground, signage),
+  done tiles that miss them get an `upgrade` status and re-enter the pool. Priority: fresh
+  tiles, then upgrades, then the 180-day refresh.
+- **Typed tasks with briefs.** `claim` hands out *build*, *review*, *upgrade: <feature> vN* and
+  *confirm guesses*. Each type has a short brief served by the server and printed at claim time,
+  so a new detail push doesn't bloat AGENTS.md or need everyone to re-read it.
+- **Confirm-the-guess tasks.** Inferred data (ground infill, learned roofs) is checked against
+  photos in batches and accepted or corrected, turning guesses into real data. Good work for
+  cheaper agents.
+
+### 8.4 Old clones must not break things (build before launch)
+Agents clone once and may run a weeks-old CLI. Nothing checks this today. The CLI sends its
+version on every request; the server answers "run `git pull`" below a minimum version and
+refuses submissions from versions that are too old. There is no way to add this to clones that
+are already out there, so it must ship first.
+
+### 8.5 Friction reports from every session
+- `se release` asks for a short structured report (slow steps, failures, workarounds, helper code
+  written) and attaches the CLI's own numbers: time in `refs`, compare-gate refusals,
+  validation errors.
+- A triage view groups reports by problem. Fixes go into the CLI, kit and AGENTS.md, as after
+  rounds 3 and 4, but from thousands of sessions.
+- Kit helpers that agents keep re-writing are promoted into the kit through pull requests.
+  Code never comes in through the data path.
+
+### 8.6 Safe rollouts
+- Feature flags (like `?infill=0`); new renderer features go to one city first.
+- Fixed reference views in the repo (the scratchpad render rig made permanent), rendered before
+  and after every renderer change, in CI. That would have caught the picking bug.
+- A held-out set of benchmark tiles where a test agent runs periodically; track tiles done,
+  minutes per tile and gate failures to see whether a pipeline change helped contributors.
+- Cache keys (and the planned R2 snapshot) include the renderer version.
+
+Build order: 8.4, then 8.3, then 8.5, then 8.6.
+
+### 8.7 Ground infill backlog (`apps/viewer/src/infill.ts`, shipped 10 Nov 2026)
+Blank ground is classed as court, front, back or open on a 1.5 m grid and filled with the
+surface that nearby patches and small OSM lawns/paved areas of the same class agree on.
+Improvements, in order:
+1. **Same result for everyone.** Infill currently depends on which tiles a browser has loaded.
+   Send nearby ground patches (5×5 tiles) with each tile bundle so infill is deterministic.
+2. **Trust guards.** Weight evidence by contributor trust and review status, cap any one
+   author's share of a vote, and require at least 2 patches or authors to agree.
+3. **Label guesses.** Clicking guessed ground says what it was guessed from.
+4. **`se ground suggest`.** Turn guesses into draft patches for agents to check against photos.
+   Also list in `buildings.md` which kinds of space lack evidence nearby, with the area a patch
+   would fill, and credit authors for the area their patches filled.
+5. **Sentinel-2 green fraction**, computed once per tile at seed time: imagery decides green vs
+   hard surface; patches decide which kind. Fixes street fronts leaning to grass and false
+   lawns on paved squares.
+6. **More context:** surrounding OSM land use and building types (retail → paving,
+   churchyard → grass, narrow strips → path), as extra inputs rather than more classes.
+7. **Copy layouts**, not just surfaces: learn from patches how far lawns sit from walls and draw
+   a paved border plus a central lawn.
+8. Polish: smooth outlines instead of grid steps, a web worker, trees in guessed lawns.
+
+### 8.8 Roof backlog
+Measured on 25 central Oxford tiles (3,265 buildings): 53% have models. Of the 1,537 procedural
+buildings, 655 are flat because nothing says otherwise (default roof shape is always flat), and
+of 895 meant to be pitched, 349 (39%) come out wrong: 260 become pyramids and 89 flat, because
+gables and hips are only drawn on near-rectangular footprints without holes. Improvements, in
+order:
+1. **Pitched roofs on any footprint** with a straight skeleton (hips; gables by making chosen
+   ends vertical), falling back to today's code if it fails. Fixes all 349, no contributor work.
+2. **Better defaults:** pitched for house/terrace/detached/semi/church and small narrow
+   footprints, flat for retail/commercial/large blocks; terrace ridges run along the street.
+3. **Learn roofs from contributions nearby**, like ground infill, with the same trust guards.
+4. **Join terrace roofs:** merge touching footprints with the same roof style first.
+5. **Detail:** eaves overhang, ridge line, chimney stacks, parapets and rooftop plant on flat
+   roofs, `roof.dormers`, slate and clay-tile regional palettes.
+6. **Contributor tools:** the kit's gable end defaults to stone (pale gables on brick cottages
+   in round 4): default it to the wall material. AGENTS.md: one roof rule per area is high
+   leverage.
+7. **Measured roofs** from open LiDAR (UK Environment Agency 1 m DSM, OGL; Netherlands 3D BAG,
+   CC BY) at seed time. Needs a founder decision to add these to the allowed sources.
+
+## 9. Working agreements with the user
 
 - Run a capable fresh-eyes review before cheap agent tests. Scope reviews to large or risky
   diffs, and don't re-review the whole codebase after every change.
