@@ -75,11 +75,24 @@ export function buildTrees(base: BaseTile, proj: Projector): THREE.Object3D[] {
   }
   // Parks get scattered trees (sparser on open grass), woods get dense mixed forest.
   const buildingRings = base.buildings.flatMap((b) => b.polygons.map((p) => p.outer.map((q) => proj.xz(q))));
+  // residential land includes its streets: keep garden trees off roads (5 m grid of road cells)
+  const roadCells = new Set<string>();
+  const cell = (x: number, z: number) => `${Math.floor(x / 5)},${Math.floor(z / 5)}`;
+  for (const rd of base.roads) {
+    const pts = rd.line.map((q) => proj.xz(q));
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az] = pts[i], [bx, bz] = pts[i + 1], len = Math.hypot(bx - ax, bz - az);
+      for (let d = 0; d <= len; d += 2.5) {
+        const x = ax + ((bx - ax) * d) / Math.max(len, 1e-6), z = az + ((bz - az) * d) / Math.max(len, 1e-6);
+        for (let ox = -5; ox <= 5; ox += 5) for (let oz = -5; oz <= 5; oz += 5) roadCells.add(cell(x + ox, z + oz));
+      }
+    }
+  }
   for (const a of base.areas) {
-    if (a.kind !== "green" && a.kind !== "forest") continue;
+    if (a.kind !== "green" && a.kind !== "forest" && a.kind !== "yard") continue;
     const sport = a.tags.leisure === "pitch" || a.tags.leisure === "golf_course" || a.tags.landuse === "farmland";
     if (sport) continue;
-    const spacing = a.kind === "forest" ? 7 : a.tags.leisure === "park" || a.tags.leisure === "garden" ? 22 : 35;
+    const spacing = a.kind === "forest" ? 7 : a.kind === "yard" ? 18 : a.tags.leisure === "park" || a.tags.leisure === "garden" ? 22 : 35;
     for (const poly of a.polygons as Polygon[]) {
       const ring = poly.outer.map((q) => proj.xz(q));
       const holes = poly.holes.map((h) => h.map((q) => proj.xz(q)));
@@ -90,7 +103,8 @@ export function buildTrees(base: BaseTile, proj: Projector): THREE.Object3D[] {
         const px = x + (r() - 0.5) * spacing * 0.9, pz = z + (r() - 0.5) * spacing * 0.9;
         if (!inside(px, pz) || !inPoly([px, pz], ring) || holes.some((h) => inPoly([px, pz], h))) continue;
         if (buildingRings.some((b) => inPoly([px, pz], b))) continue;
-        if (a.kind !== "forest" && r() < 0.35) continue; // leave clearings in parks
+        if (a.kind !== "forest" && r() < (a.kind === "yard" ? 0.55 : 0.35)) continue; // leave clearings in parks
+        if (a.kind === "yard" && roadCells.has(cell(px, pz))) continue;
         add(px, pz, a.kind === "forest" && r() < 0.35);
       }
       if (spots.length > 4000) break;

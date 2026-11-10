@@ -26,7 +26,8 @@ const wanted = (t: Record<string, string>) =>
   !!(t.building || t["building:part"] || t.highway || t["area:highway"] ||
     /^(rail|light_rail|subway|tram)$/.test(t.railway ?? "") ||
     /^(water|wood|scrub|grassland|beach|sand|wetland|tree_row)$/.test(t.natural ?? "") || t.waterway === "riverbank" ||
-    /^(grass|forest|meadow|recreation_ground|cemetery|village_green|farmland|orchard)$/.test(t.landuse ?? "") ||
+    /^(grass|forest|meadow|recreation_ground|cemetery|village_green|farmland|orchard|residential|allotments|flowerbed)$/.test(t.landuse ?? "") ||
+    t.place === "square" ||
     /^(park|garden|pitch|golf_course|playground)$/.test(t.leisure ?? "") || t.amenity === "parking");
 
 type LL = { lat: number; lon: number };
@@ -50,7 +51,7 @@ const handle = (items: any[]) => {
       if (wanted(it.tags ?? {})) elements.push({ type: "way", id: it.id, tags: it.tags, geometry: geom(it.refs) });
     } else if (it.type === "relation") {
       const t = it.tags ?? {};
-      if (t.type !== "multipolygon" || !(t.building || /^(water|wood)$/.test(t.natural ?? "") || t.leisure === "park")) continue;
+      if (t.type !== "multipolygon" || !(t.building || /^(water|wood)$/.test(t.natural ?? "") || t.leisure === "park" || t.landuse === "residential")) continue;
       // osm-pbf-parser names a member's way id `id` (Overpass calls it `ref`)
       const members = it.members.map((m: any) => ({ ...m, ref: m.ref ?? m.id }))
         .filter((m: any) => m.type === "way" && ways.has(m.ref))

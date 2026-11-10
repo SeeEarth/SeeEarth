@@ -174,7 +174,7 @@ export function flatMaterial(color: string, opts: Partial<THREE.MeshStandardMate
 // ---------------------------------------------------------------- ground surfaces (world-UV, 1 unit = `metres`)
 function rnd(seed: number) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 4294967296; }; }
 
-export const GROUND_METRES: Record<string, number> = { paving: 4, asphalt: 6, grass: 5, gravel: 3, water: 20, plain: 8 };
+export const GROUND_METRES: Record<string, number> = { paving: 4, asphalt: 6, grass: 5, gravel: 3, water: 20, plain: 8, garden: 24 };
 
 function paintGround(g: CanvasRenderingContext2D, S: number, kind: string, color: string) {
   const r = rnd(kind.length * 977 + color.length);
@@ -206,6 +206,17 @@ function paintGround(g: CanvasRenderingContext2D, S: number, kind: string, color
   } else if (kind === "grass") {
     speck(3000, 2, 0.14);
     for (let i = 0; i < 10; i++) { g.fillStyle = `rgba(${r() < 0.5 ? "60,80,20" : "160,170,90"},${0.05 + r() * 0.06})`; g.beginPath(); g.ellipse(r() * S, r() * S, 20 + r() * 40, 20 + r() * 40, 0, 0, Math.PI * 2); g.fill(); }
+  } else if (kind === "garden") {
+    // 24 m of back gardens: lawn, patios, beds, sheds' shadows, hedges between plots
+    speck(3000, 2, 0.14);
+    const patch = (rgb: string, a: number, n: number, rmin: number, rmax: number) => {
+      for (let i = 0; i < n; i++) { g.fillStyle = `rgba(${rgb},${a})`; g.beginPath(); g.ellipse(r() * S, r() * S, rmin + r() * (rmax - rmin), rmin + r() * (rmax - rmin), r() * 3, 0, Math.PI * 2); g.fill(); }
+    };
+    patch("150,140,120", 0.45, 10, 6, 18);   // patios and paths
+    patch("95,80,55", 0.35, 12, 4, 12);      // beds and bare soil
+    patch("55,70,35", 0.4, 14, 5, 16);       // shrubs
+    g.strokeStyle = "rgba(45,60,30,0.55)"; g.lineWidth = 3;
+    for (let i = 0; i < 4; i++) { const x = (i + 0.5) * (S / 4) + (r() - 0.5) * 10; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, S); g.stroke(); } // hedges between plots
   } else if (kind === "gravel") {
     speck(4000, 2.5, 0.2);
   } else {

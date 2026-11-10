@@ -14,20 +14,20 @@ type P2 = [number, number];
 
 interface RoadStyle { width: number; color: string; casing?: string; centre?: boolean; order: number }
 
-const FOOT = { color: "#c9bfa9", order: 6 };
+const FOOT = { color: "#b9ac90", order: 6 };
 const ROADS: Record<string, Omit<RoadStyle, "order"> & { order?: number }> = {
-  motorway: { width: 16, color: "#62656a", casing: "#bdb6a8", centre: true },
-  trunk: { width: 14, color: "#64676c", casing: "#c4bdb0", centre: true },
-  primary: { width: 12, color: "#686b70", casing: "#c9c2b5", centre: true },
-  secondary: { width: 10, color: "#6c6f74", casing: "#ccc5b8", centre: true },
-  tertiary: { width: 8.5, color: "#707378", casing: "#cfc8bb" },
-  unclassified: { width: 6.5, color: "#74777b", casing: "#d1cabd" },
-  residential: { width: 6.5, color: "#74777b", casing: "#d1cabd" },
-  living_street: { width: 5.5, color: "#7a7d80", casing: "#d3ccbf" },
+  motorway: { width: 16, color: "#62656a", casing: "#aba391", centre: true },
+  trunk: { width: 14, color: "#64676c", casing: "#b3a999", centre: true },
+  primary: { width: 12, color: "#686b70", casing: "#b8af9d", centre: true },
+  secondary: { width: 10, color: "#6c6f74", casing: "#bbb2a0", centre: true },
+  tertiary: { width: 8.5, color: "#707378", casing: "#beb5a3" },
+  unclassified: { width: 6.5, color: "#74777b", casing: "#c0b7a5" },
+  residential: { width: 6.5, color: "#74777b", casing: "#c0b7a5" },
+  living_street: { width: 5.5, color: "#7a7d80", casing: "#c2b9a7" },
   busway: { width: 7, color: "#6e6464" },
   service: { width: 4, color: "#7d8084" },
   track: { width: 3, color: "#a99c80", order: 6 },
-  pedestrian: { width: 6, color: "#cdc5b6", order: 6 },
+  pedestrian: { width: 6, color: "#bcb29e", order: 6 },
   footway: { width: 2.2, ...FOOT },
   path: { width: 1.8, ...FOOT, color: "#bfb294" },
   steps: { width: 2.2, ...FOOT, color: "#b9b0a0" },
@@ -47,8 +47,9 @@ function roadStyle(t: Record<string, string>): RoadStyle | null {
   return { ...base, width: Math.min(Math.max(width, 1.2), 40), centre: !linkOf && base.centre, order: base.order ?? 8 };
 }
 
-const AREA_COLOR = { water: "#557f98", green: "#7c8b5b", forest: "#56693f", sand: "#d6c69a", paved: "#c3bcae" } as const;
-const AREA_ORDER = { paved: 1, sand: 2, green: 3, forest: 4, water: 5 } as const;
+// "yard": residential land between houses (gardens, yards), drawn under everything else
+const AREA_COLOR = { water: "#557f98", green: "#7c8b5b", forest: "#56693f", sand: "#d6c69a", paved: "#aea797", yard: "#7d8460" } as const;
+const AREA_ORDER = { yard: 0.5, paved: 1, sand: 2, green: 3, forest: 4, water: 5 } as const;
 
 /** Contributor ground surfaces: default colour and texture. Drawn above OSM areas, below paths and roads. */
 const SURFACE_STYLE: Record<string, { color: string; texture: string }> = {
@@ -59,7 +60,7 @@ const SURFACE_STYLE: Record<string, { color: string; texture: string }> = {
 };
 const GROUND_ORDER = 5.5;
 
-const AREA_SURFACE: Record<keyof typeof AREA_COLOR, string> = { water: "water", green: "grass", forest: "grass", sand: "gravel", paved: "paving" };
+const AREA_SURFACE: Record<keyof typeof AREA_COLOR, string> = { water: "water", green: "grass", forest: "grass", sand: "gravel", paved: "paving", yard: "garden" };
 
 class Layers {
   private m = new Map<string, { pos: number[]; order: number; surface: string }>();

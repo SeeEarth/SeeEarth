@@ -17,7 +17,7 @@ export interface BaseBuilding {
 }
 
 export interface BaseLine { id: string; tags: Record<string, string>; line: LL[] }
-export type AreaKind = "water" | "green" | "forest" | "sand" | "paved";
+export type AreaKind = "water" | "green" | "forest" | "sand" | "paved" | "yard";
 export interface BaseArea { id: string; kind: AreaKind; tags: Record<string, string>; polygons: Polygon[] }
 
 export interface BaseTile {
@@ -57,7 +57,9 @@ export function overpassQuery(b: BBox): string {
   node["natural"="tree"](${bb});
   relation["natural"~"^(water|wood)$"](${bb});
   way["waterway"="riverbank"](${bb});
-  way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green|farmland|orchard)$"](${bb});
+  way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green|farmland|orchard|residential|allotments|flowerbed)$"](${bb});
+  relation["landuse"="residential"](${bb});
+  way["place"="square"](${bb});
   way["leisure"~"^(park|garden|pitch|golf_course|playground)$"](${bb});
   relation["leisure"="park"](${bb});
   way["amenity"="parking"](${bb});
@@ -166,7 +168,15 @@ function polygonsFromRelation(el: OPElement): Polygon[] {
   }));
 }
 
+const PAVED_SURFACE = /^(paved|paving_stones|sett|cobblestone|unhewn_cobblestone|concrete|concrete:plates|asphalt|bricks|stone|metal|wood)$/;
 function areaKind(t: Record<string, string>): AreaKind | null {
+  // an explicit surface on an area says what's actually on the ground
+  if (t.surface === "grass" || t.surface === "grass_paver") return "green";
+  if (PAVED_SURFACE.test(t.surface ?? "") && !t.landuse && !t.natural) return "paved";
+  if (t.highway && (t.area === "yes" || t["area:highway"])) return "paved";   // pedestrian squares, plazas
+  if (t.place === "square") return "paved";
+  // residential land between houses is mostly gardens and yards
+  if (t.landuse === "residential") return "yard";
   if (t.natural === "water" || t.waterway === "riverbank" || t.natural === "wetland") return "water";
   if (t.natural === "wood" || t.landuse === "forest" || t.landuse === "orchard") return "forest";
   if (t.natural === "beach" || t.natural === "sand") return "sand";
