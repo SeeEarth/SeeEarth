@@ -298,7 +298,8 @@ export function resolveBuildings({ buildings, changes }: ResolveInput): Resolved
   // New buildings (n:slug) defined only by contributors.
   for (const [target, list] of specs) {
     if (seen.has(target) || !target.startsWith("n:")) continue;
-    const fp = [...list].reverse().map((c) => (c.change as { spec: BuildingSpec }).spec.footprint ?? (c.change as { spec: BuildingSpec }).spec.parts?.[0]?.footprint).find(Boolean);
+    // the newest outline: an explicit footprint, else the hull of all its parts
+    const fp = [...list].reverse().map((c) => { const s = (c.change as { spec: BuildingSpec }).spec; return s.footprint ?? (s.parts?.length ? hullLL(s.parts.flatMap((p) => p.footprint)) : undefined); }).find(Boolean);
     if (!fp) continue;
     let cx = 0, cy = 0; for (const p of fp) { cx += p[0]; cy += p[1]; }
     build(target, { building: "yes" }, polyFromRing(fp), [cx / fp.length, cy / fp.length], 100, false);
@@ -310,6 +311,18 @@ export function resolveBuildings({ buildings, changes }: ResolveInput): Resolved
     out.push({ id: target, tags: {}, centroid: [t.lon, t.lat], volumes: [], hidden: false, asset: { change: a.change as AssetChange, author: a.author, changeId: a.id }, contributors: [a.author], layers: [{ kind: "asset", id: a.id, author: a.author }] });
   }
   return out;
+}
+
+/** Convex hull of lon/lat points (closed ring, counter-clockwise). */
+export function hullLL(pts: LL[]): LL[] {
+  const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return [...p, p[0]];
+  const cross = (o: LL, a: LL, b: LL) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo: LL[] = [], hi: LL[] = [];
+  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  for (const q of [...p].reverse()) { while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], q) <= 0) hi.pop(); hi.push(q); }
+  const ring = [...lo.slice(0, -1), ...hi.slice(0, -1)];
+  return [...ring, ring[0]];
 }
 
 // ---------------------------------------------------------------- towers

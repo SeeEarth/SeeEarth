@@ -300,9 +300,10 @@ function windowParts(style: WindowStyle, w: number, h: number, cy: number) {
     frame.push(shapeGeo(o, 0.03, -0.05));    // …its stone surround just behind it, showing as a rim
     if (style === "gothic" && w > 1) frame.push(b(0.08, h - rise, 0.1, 0, cy - rise / 2, -0.1)); // mullion
   } else {
-    glass.push(b(w, h, 0.04, 0, cy, -0.04));
-    frame.push(b(w + 2 * t, t, 0.12, 0, cy + h / 2 + t / 2, -0.06), b(w + 2 * t, t * 1.4, 0.18, 0, cy - h / 2 - t * 0.7, -0.09));
-    frame.push(b(t, h, 0.1, -w / 2 - t / 2, cy, -0.05), b(t, h, 0.1, w / 2 + t / 2, cy, -0.05));
+    glass.push(b(w, h, 0.04, 0, cy, -0.03));
+    // head, sill and jambs stand proud of the wall so the glass reads as set back
+    frame.push(b(w + 2 * t, t * 1.2, 0.2, 0, cy + h / 2 + t * 0.6, -0.1), b(w + 2 * t + 0.16, t * 1.4, 0.26, 0, cy - h / 2 - t * 0.7, -0.13));
+    frame.push(b(t, h, 0.18, -w / 2 - t / 2, cy, -0.09), b(t, h, 0.18, w / 2 + t / 2, cy, -0.09));
     if (style === "sash") frame.push(b(w, 0.06, 0.08, 0, cy, -0.06), b(0.05, h, 0.08, 0, cy, -0.06));
     if (style === "shop") frame.push(b(w, 0.4, 0.12, 0, cy + h / 2 + 0.3, -0.07));
   }
@@ -473,8 +474,9 @@ type P = [number, number];
 
 /** Vertical prism from a plan outline [[x, z], …] (e.g. `params.footprint`), from y0 up to y1. Holes optional. */
 export function prism(ring: P[], y0: number, y1: number, m: THREE.Material, holes: P[][] = []): THREE.Mesh {
-  const s = new THREE.Shape(ring.map(([x, z]) => new THREE.Vector2(x, -z)));
-  for (const h of holes) s.holes.push(new THREE.Path(h.map(([x, z]) => new THREE.Vector2(x, -z))));
+  // any winding works: outer rings are made counter-clockwise and holes clockwise (in x, −z)
+  const s = new THREE.Shape(ccw(openRing(ring)).map(([x, z]) => new THREE.Vector2(x, -z)));
+  for (const h of holes) s.holes.push(new THREE.Path([...ccw(openRing(h))].reverse().map(([x, z]) => new THREE.Vector2(x, -z))));
   const g = new THREE.ExtrudeGeometry(s, { depth: y1 - y0, bevelEnabled: false, curveSegments: 4 });
   g.rotateX(-Math.PI / 2); g.translate(0, y0, 0);
   return mesh(g, m);
@@ -561,16 +563,25 @@ function openingShape(w: number, h: number, kind: OpeningKind): THREE.Shape {
  * One window, door or niche facing −Z, bottom at y=0, centred on x=0: the opening (glass or door
  * colour) in front, an optional stone surround behind it, and optional mullions/transom.
  */
-export function opening(w: number, h: number, kind: OpeningKind = "rect", o: { fill?: THREE.Material; surround?: THREE.Material; surroundWidth?: number; mullions?: number } = {}): THREE.Group {
-  const fill = o.fill ?? materials.glass(), sw = o.surroundWidth ?? 0.22;
+export function opening(w: number, h: number, kind: OpeningKind = "rect", o: { fill?: THREE.Material; surround?: THREE.Material; surroundWidth?: number; mullions?: number; depth?: number; sill?: boolean; hood?: boolean } = {}): THREE.Group {
+  // The surround is a ring standing `depth` proud of the wall with the glass set back inside it,
+  // so every window has a real reveal that catches shadow (the single biggest cue that a facade
+  // is solid). Sills and hood moulds are optional extras on rectangular and arched openings.
+  const fill = o.fill ?? materials.glass(), sw = o.surroundWidth ?? 0.22, depth = o.depth ?? 0.2;
   const g = group();
-  const pane = new THREE.ExtrudeGeometry(openingShape(w, h, kind), { depth: 0.05, bevelEnabled: false, curveSegments: 6 });
-  pane.translate(0, 0, -0.1); g.add(mesh(pane, fill));
+  const pane = new THREE.ExtrudeGeometry(openingShape(w, h, kind), { depth: 0.03, bevelEnabled: false, curveSegments: 8 });
+  pane.translate(0, 0, -0.04); g.add(mesh(pane, fill));
   if (o.surround) {
-    const s = new THREE.ExtrudeGeometry(openingShape(w + 2 * sw, h + sw, kind), { depth: 0.05, bevelEnabled: false, curveSegments: 6 });
-    s.translate(0, kind === "round" ? -sw / 2 : 0, -0.05); g.add(mesh(s, o.surround));
-    for (let i = 1; i <= (o.mullions ?? 0); i++) g.add(box(0.12, h * (kind === "rect" ? 1 : 0.72), 0.06, o.surround, -w / 2 + (i * w) / ((o.mullions ?? 0) + 1), 0, -0.13));
-    if (o.mullions && kind === "rect" && h > 2.2) g.add(box(w, 0.12, 0.06, o.surround, 0, h * 0.62, -0.13));
+    const outer = openingShape(w + 2 * sw, h + sw, kind);
+    if (kind === "round") outer.holes.push(new THREE.Path(openingShape(w, h, kind).getPoints(16).map((p) => new THREE.Vector2(p.x, p.y + sw / 2))));
+    else outer.holes.push(new THREE.Path(openingShape(w, h, kind).getPoints(8)));
+    const s = new THREE.ExtrudeGeometry(outer, { depth, bevelEnabled: false, curveSegments: 8 });
+    s.translate(0, kind === "round" ? -sw / 2 : 0, -depth); g.add(mesh(s, o.surround));
+    const md = Math.min(0.12, depth * 0.6);
+    for (let i = 1; i <= (o.mullions ?? 0); i++) g.add(box(0.12, h * (kind === "rect" ? 1 : 0.72), md, o.surround, -w / 2 + (i * w) / ((o.mullions ?? 0) + 1), 0, -0.04 - md / 2));
+    if (o.mullions && kind === "rect" && h > 2.2) g.add(box(w, 0.12, md, o.surround, 0, h * 0.62, -0.04 - md / 2));
+    if (o.sill ?? kind !== "round") g.add(box(w + 2 * sw + 0.2, 0.14, depth + 0.12, o.surround, 0, -0.14, -(depth + 0.12) / 2));
+    if (o.hood && kind === "rect") g.add(box(w + 2 * sw + 0.3, 0.18, depth + 0.1, o.surround, 0, h + sw, -(depth + 0.1) / 2));
   }
   return g;
 }
@@ -637,15 +648,112 @@ export function parapetAlong(ring: P[], y: number, m: THREE.Material, o: { heigh
   return g;
 }
 
-/** Simple standing statue (body + head) for niches, rooflines and gateways. */
+/** Standing draped figure (robe, shoulders, head) for niches, rooflines and gateways; faces −Z. */
 export function statue(h: number, m: THREE.Material, x = 0, y = 0, z = 0): THREE.Group {
-  return group(cylinder(h * 0.13, h * 0.75, m, { x, y, z, segments: 6, rTop: h * 0.09 }), cylinder(h * 0.07, h * 0.18, m, { x, y: y + h * 0.78, z, segments: 6 }));
+  // a robed silhouette: flared hem, waist, broad shoulders, neck; then head and folded arms
+  const prof: P[] = ([[0.001, 0], [0.17, 0], [0.16, 0.08], [0.12, 0.45], [0.11, 0.55], [0.14, 0.7], [0.15, 0.76], [0.07, 0.8], [0.05, 0.83], [0.001, 0.83]] as P[]).map(([r, yy]) => [r * h, yy * h] as P);
+  const body = lathe(prof, m, { segments: 10 });
+  body.scale.set(1, 1, 0.72); // flatter front to back
+  const head = new THREE.SphereGeometry(0.075 * h, 10, 8); head.scale(0.9, 1.1, 0.95); head.translate(0, 0.9 * h, 0);
+  const fig = group(body, mesh(head, m), box(0.2 * h, 0.06 * h, 0.08 * h, m, 0, 0.55 * h, -0.08 * h));
+  fig.position.set(x, y, z);
+  return fig;
+}
+
+// ---------------------------------------------------------------- outlines: winding, offsets, edges, mouldings
+
+const openRing = (ring: P[]): P[] => (ring.length > 2 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.slice(0, -1) : ring);
+/** Signed plan area in (x, −z): positive = counter-clockwise seen from above. */
+const planArea = (r: P[]) => { let a = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += r[j][0] * -r[i][1] - r[i][0] * -r[j][1]; return a / 2; };
+/** The same outline, counter-clockwise seen from above (the winding `prism` and `offset` expect). Edge i stays edge i only if it was already ccw. */
+export function ccw(ring: P[]): P[] { const r = openRing(ring); return planArea(r) < 0 ? [...r].reverse() : r; }
+
+/** Grow (d > 0) or shrink (d < 0) an outline by d metres, with mitred corners. Edge indices are kept. */
+export function offset(ring: P[], d: number): P[] {
+  const r = openRing(ring), sgn = planArea(r) < 0 ? -1 : 1, n = r.length;
+  // outward normal of an edge (dx, dz) of a ring that is ccw seen from above is (−dz, dx)/L
+  const N = (i: number): [number, number] => { const a = r[i], b = r[(i + 1) % n], dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz) || 1; return [(sgn * -dz) / L, (sgn * dx) / L]; };
+  const out: P[] = [];
+  for (let i = 0; i < n; i++) {
+    const n0 = N((i - 1 + n) % n), n1 = N(i);
+    let mx = n0[0] + n1[0], mz = n0[1] + n1[1];
+    const ml = Math.hypot(mx, mz) || 1; mx /= ml; mz /= ml;
+    const cos = Math.max(0.35, mx * n1[0] + mz * n1[1]); // limit spikes at very sharp corners
+    out.push([r[i][0] + (mx * d) / cos, r[i][1] + (mz * d) / cos]);
+  }
+  return out;
+}
+
+export interface EdgeInfo { i: number; a: P; b: P; length: number; /** compass bearing the edge faces (0 = north, 90 = east) */ bearing: number; nx: number; nz: number; mid: P }
+/** Every edge of an outline with its length, outward normal and the compass direction it faces. */
+export function edges(ring: P[]): EdgeInfo[] {
+  const r = openRing(ring);
+  return r.map((a, i) => {
+    const b = r[(i + 1) % r.length], [nx, nz] = edgeNormal(r, i);
+    return { i, a, b, length: Math.hypot(b[0] - a[0], b[1] - a[1]), bearing: (THREE.MathUtils.radToDeg(Math.atan2(nx, -nz)) + 360) % 360, nx, nz, mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as P };
+  });
+}
+
+/**
+ * The longest edge facing a compass direction (± `tolerance` degrees): usually the street front.
+ * Returns the edge plus `place(obj, u, y)`, which stands an object built facing −Z at `u` metres
+ * along the edge (from its start), on the wall face, facing out.
+ */
+export function front(ring: P[], bearing: number, tolerance = 60) {
+  const diff = (a: number) => Math.abs(((a - bearing + 540) % 360) - 180);
+  const cands = edges(ring).filter((e) => diff(e.bearing) <= tolerance).sort((x, y) => y.length - x.length);
+  const e = cands[0] ?? edges(ring).sort((x, y) => diff(x.bearing) - diff(y.bearing))[0];
+  const ux = (e.b[0] - e.a[0]) / e.length, uz = (e.b[1] - e.a[1]) / e.length;
+  return { ...e, ux, uz, place: <T extends THREE.Object3D>(obj: T, u: number, y = 0, out = 0) => face(obj, e.a[0] + ux * u + e.nx * out, y, e.a[1] + uz * u + e.nz * out, e.nx, e.nz) };
+}
+
+/** Call fn(x, z, t) at n evenly spaced points from p0 to p1 (centres of n equal bays). */
+export function along<T>(p0: P, p1: P, n: number, fn: (x: number, z: number, t: number, i: number) => T): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < n; i++) { const t = (i + 0.5) / n; out.push(fn(p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t, t, i)); }
+  return out;
+}
+
+/** A moulded cornice following the outline at height y: three stepped courses projecting `depth`. */
+export function cornice(ring: P[], y: number, m: THREE.Material, o: { depth?: number; height?: number } = {}): THREE.Group {
+  const d = o.depth ?? 0.45, h = o.height ?? 0.6;
+  return group(
+    prism(offset(ring, d * 0.3), y, y + h * 0.3, m),
+    prism(offset(ring, d * 0.6), y + h * 0.3, y + h * 0.55, m),
+    prism(offset(ring, d), y + h * 0.55, y + h, m),
+  );
+}
+
+/** A plain projecting band (string course, sill band or plinth) following the outline. */
+export function band(ring: P[], y: number, m: THREE.Material, o: { depth?: number; height?: number } = {}): THREE.Mesh {
+  return prism(offset(ring, o.depth ?? 0.1), y, y + (o.height ?? 0.25), m);
+}
+
+/** Alternating long-and-short corner stones on every convex corner, from y0 to y1. */
+export function quoins(ring: P[], y0: number, y1: number, m: THREE.Material, o: { size?: number; course?: number } = {}): THREE.Group {
+  const r = openRing(ring), s = o.size ?? 0.5, c = o.course ?? 0.35, g = group(), sgn = planArea(r) < 0 ? -1 : 1;
+  for (let i = 0; i < r.length; i++) {
+    const p = r[i], a = r[(i - 1 + r.length) % r.length], b = r[(i + 1) % r.length];
+    const cross = (p[0] - a[0]) * -(b[1] - p[1]) - -(p[1] - a[1]) * (b[0] - p[0]);
+    if (cross * sgn <= 0) continue; // concave corner
+    const u1 = [(a[0] - p[0]), (a[1] - p[1])], u2 = [(b[0] - p[0]), (b[1] - p[1])];
+    const l1 = Math.hypot(u1[0], u1[1]) || 1, l2 = Math.hypot(u2[0], u2[1]) || 1;
+    let k = 0;
+    for (let y = y0; y + c <= y1 + 1e-6; y += c, k++) {
+      const len1 = k % 2 ? s : s * 1.6, len2 = k % 2 ? s * 1.6 : s;
+      const q: P[] = [p, [p[0] + (u1[0] / l1) * len1, p[1] + (u1[1] / l1) * len1], [p[0] + (u1[0] / l1) * len1 + (u2[0] / l2) * 0.3, p[1] + (u1[1] / l1) * len1 + (u2[1] / l2) * 0.3], [p[0] + (u2[0] / l2) * 0.3, p[1] + (u2[1] / l2) * 0.3]];
+      const q2: P[] = [p, [p[0] + (u2[0] / l2) * len2, p[1] + (u2[1] / l2) * len2], [p[0] + (u2[0] / l2) * len2 + (u1[0] / l1) * 0.3, p[1] + (u2[1] / l2) * len2 + (u1[1] / l1) * 0.3], [p[0] + (u1[0] / l1) * 0.3, p[1] + (u1[1] / l1) * 0.3]];
+      g.add(prism(offset(q, 0.04), y + 0.02, y + c - 0.02, m), prism(offset(q2, 0.04), y + 0.02, y + c - 0.02, m));
+    }
+  }
+  return g;
 }
 
 /** Everything agents can use, passed to the model script as `k`. */
 export const kit = {
   THREE, materials, group, at, box, cylinder, roof, crenellations, pinnacles, windows, door, block, tower, dome, arcade,
   prism, lathe, ogeeProfile, ngon, elevation, column, balustrade, pinnacle, opening, face, wall, openingsAlong, parapetAlong, statue,
+  ccw, offset, edges, front, along, cornice, band, quoins,
 };
 export type Kit = typeof kit;
 

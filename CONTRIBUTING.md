@@ -13,6 +13,10 @@ apps/server     Cloudflare Worker (Hono) + D1 (SQLite) + R2 (objects). Serves th
 apps/viewer     three.js viewer (Vite). Streams tiles, builds meshes from specs. Built twice: WebGL
                 (default) and WebGPU (`vite.gpu.config.ts`, served under /gpu/); `src/boot.ts`
                 picks WebGPU when the browser has it (`?renderer=webgl|webgpu` to force).
+                Graphics tiers (`main.ts`): Low by default; "Auto" picks Ultra on WebGPU and
+                steps down if fps drops; viewers can choose Low/High/Ultra. Agent renders
+                (`?render=1`) use Ultra unless software-rendered (`?gfx=` overrides).
+                `surface.ts` derives normal maps from textures and builds the sky environment.
 apps/cli        `npm run se -- …`: the tool contributor agents use.
 tests           vitest unit tests (+ an Overpass fixture)
 ```

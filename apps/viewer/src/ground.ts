@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import type { BaseArea, BaseLine } from "@seeearth/core";
 import type { Projector } from "./geo";
-import { flatMaterial } from "./textures";
+import { flatMaterial, groundMaterial, GROUND_METRES } from "./textures";
 
 type P2 = [number, number];
 
@@ -47,15 +47,18 @@ function roadStyle(t: Record<string, string>): RoadStyle | null {
   return { ...base, width: Math.min(Math.max(width, 1.2), 40), centre: !linkOf && base.centre, order: base.order ?? 8 };
 }
 
-const AREA_COLOR = { water: "#6a98b5", green: "#8fae74", forest: "#6f8f58", sand: "#dccb9c", paved: "#c6bfb1" } as const;
+const AREA_COLOR = { water: "#557f98", green: "#7c8b5b", forest: "#56693f", sand: "#d6c69a", paved: "#c3bcae" } as const;
 const AREA_ORDER = { paved: 1, sand: 2, green: 3, forest: 4, water: 5 } as const;
 
+const AREA_SURFACE: Record<keyof typeof AREA_COLOR, string> = { water: "water", green: "grass", forest: "grass", sand: "gravel", paved: "paving" };
+
 class Layers {
-  private m = new Map<string, { pos: number[]; order: number }>();
-  add(color: string, order: number) {
-    const k = `${order}|${color}`;
+  private m = new Map<string, { pos: number[]; order: number; surface: string }>();
+  /** surface: a textured ground kind (paving, asphalt, grass…) or "flat" for plain paint. */
+  add(color: string, order: number, surface = "flat") {
+    const k = `${order}|${color}|${surface}`;
     let l = this.m.get(k);
-    if (!l) { l = { pos: [], order }; this.m.set(k, l); }
+    if (!l) { l = { pos: [], order, surface }; this.m.set(k, l); }
     return l.pos;
   }
   meshes(): THREE.Mesh[] {
@@ -74,8 +77,17 @@ class Layers {
       const n = new Float32Array(l.pos.length); for (let i = 1; i < n.length; i += 3) n[i] = 1;
       g.setAttribute("normal", new THREE.BufferAttribute(n, 3));
       g.computeBoundingSphere();
-      const water = color === AREA_COLOR.water;
-      const mesh = new THREE.Mesh(g, flatMaterial(color, { depthWrite: false, roughness: water ? 0.25 : 0.95, metalness: water ? 0.1 : 0 }));
+      const water = l.surface === "water";
+      let mat: THREE.Material;
+      if (l.surface === "flat") mat = flatMaterial(color, { depthWrite: false, roughness: 0.95 });
+      else {
+        // world-space UVs so the texture is continuous across tiles
+        const s = GROUND_METRES[l.surface] ?? 4, uv = new Float32Array((p.length / 3) * 2);
+        for (let i = 0, j = 0; i < p.length; i += 3, j += 2) { uv[j] = p[i] / s; uv[j + 1] = -p[i + 2] / s; }
+        g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        mat = groundMaterial(l.surface, color, { depthWrite: false, ...(water ? { roughness: 0.12, metalness: 0.0, envMapIntensity: 1.3 } : {}) });
+      }
+      const mesh = new THREE.Mesh(g, mat);
       mesh.renderOrder = l.order;
       mesh.receiveShadow = true;
       out.push(mesh);
@@ -137,7 +149,7 @@ export function buildGround(roads: BaseLine[], rails: BaseLine[], areas: BaseAre
       const holes = poly.holes.map((h) => h.slice(0, -1).map((p) => proj.xz(p)));
       const tris = THREE.ShapeUtils.triangulateShape(outer.map(([x, z]) => new THREE.Vector2(x, z)), holes.map((h) => h.map(([x, z]) => new THREE.Vector2(x, z))));
       const all = [...outer, ...holes.flat()];
-      const pos = L.add(AREA_COLOR[a.kind], AREA_ORDER[a.kind]);
+      const pos = L.add(AREA_COLOR[a.kind], AREA_ORDER[a.kind], AREA_SURFACE[a.kind]);
       for (const [i, j, k] of tris) pos.push(all[i][0], 0, all[i][1], all[j][0], 0, all[j][1], all[k][0], 0, all[k][1]);
     }
   }
@@ -149,8 +161,13 @@ export function buildGround(roads: BaseLine[], rails: BaseLine[], areas: BaseAre
     if (!st) continue;
     const pts = r.line.map((p) => proj.xz(p));
     const y = bridgeLift(t);
-    if (st.casing) strokeRound(pts, st.width + 3, y, L.add(st.casing, 7));
-    strokeRound(pts, st.width, y, L.add(st.color, st.order + (st.casing ? 1 : 0)));
+    const vehicle = st.order === 8;
+    if (st.casing) {
+      strokeRound(pts, st.width + 3.4, y, L.add(st.casing, 7, "paving"));           // pavements
+      strokeRound(pts, st.width + 0.6, y, L.add("#a9a49a", 7.5, "plain"));          // kerb stones
+    }
+    const surface = vehicle ? "asphalt" : /^(path|track|bridleway)$/.test(t.highway) ? "gravel" : "paving";
+    strokeRound(pts, st.width, y, L.add(st.color, st.order + (st.casing ? 1 : 0), surface));
     if (st.centre && (Number(t.lanes) || 2) >= 2 && t.oneway !== "yes") dashes(pts, y, L.add("#e9e6dc", 10));
   }
 
@@ -158,7 +175,7 @@ export function buildGround(roads: BaseLine[], rails: BaseLine[], areas: BaseAre
     if (r.tags.tunnel && r.tags.tunnel !== "no") continue;
     const pts = r.line.map((p) => proj.xz(p));
     const y = bridgeLift(r.tags);
-    strokeRound(pts, 3.2, y, L.add("#8d8378", 6));
+    strokeRound(pts, 3.2, y, L.add("#8d8378", 6, "gravel"));
     strokeRound(pts, 1.6, y, L.add("#5b534c", 7));
   }
 

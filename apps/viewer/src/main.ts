@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { skyEnvironment } from "./surface";
+import { groundMaterial, GROUND_METRES } from "./textures";
 import { bboxIntersects, lonLatToTile, tileCenter, tileKey, type ResolvedBuilding, type StoredChange } from "@seeearth/core";
 import { Projector } from "./geo";
 import { Controls } from "./controls";
@@ -31,17 +32,23 @@ const GPU = import.meta.env.VITE_GPU === "1";
 const renderer: THREE.WebGLRenderer = GPU
   ? ((await (await import("./gpu")).createRenderer(canvas)) as unknown as THREE.WebGLRenderer)
   : new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: RENDER });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.85;
-const LOW_GFX = (() => { try { return localStorage.getItem("se-gfx") === "low"; } catch { return false; } })();
-renderer.shadowMap.enabled = !LOW_GFX;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = GPU ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap; // WebGPU has no PCFSoft (its PCF is already filtered)
+// Headless software rendering (agents' machines without a GPU) gets lighter settings.
+const SOFTWARE = (() => {
+  if (GPU) return false;
+  try {
+    const gl = renderer.getContext(), ext = gl.getExtension("WEBGL_debug_renderer_info");
+    return /swiftshader|llvmpipe|software/i.test(String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : ""));
+  } catch { return false; }
+})();
 
 const scene = new THREE.Scene();
 // Soft reflections of a bright sky for every material (glass, metal and wet-looking stone).
-scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.3;
+// (set below, once the sun direction is known)
 const camera = new THREE.PerspectiveCamera(num("fov", 60), 1, 0.5, 20000);
 camera.position.set(0, num("alt", 320), 0);
 
@@ -62,17 +69,27 @@ sky.renderOrder = -2;
 sky.frustumCulled = false;
 const sun = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 38), THREE.MathUtils.degToRad(150));
 scene.add(sky);
+// Glass, metal and water reflect the open sky.
+scene.environment = skyEnvironment(renderer, sun);
+scene.environmentIntensity = 0.85;
 scene.fog = new THREE.Fog(FOG, 1500, 9000);
 
-scene.add(new THREE.HemisphereLight(0xdfeaf5, 0x8a7f6a, 1.6));
-const sunLight = new THREE.DirectionalLight(0xfff1dc, 3.2);
+// Most fill light comes from the sky environment; the hemisphere adds a little warm bounce.
+scene.add(new THREE.HemisphereLight(0xd6e4f2, 0x9a8a70, 0.7));
+const sunLight = new THREE.DirectionalLight(0xffeedd, 3.6);
 sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(RENDER ? 1024 : 2048, RENDER ? 1024 : 2048); // agent renders run in software: keep them light
-const sc = sunLight.shadow.camera; sc.left = sc.bottom = -260; sc.right = sc.top = 260; sc.near = 1; sc.far = 3000;
-sunLight.shadow.bias = -0.0004; sunLight.shadow.normalBias = 0.6;
+let SHADOW = 2048;
+const sc = sunLight.shadow.camera; sc.near = 1; sc.far = 3000;
+sunLight.shadow.bias = -0.0003; sunLight.shadow.normalBias = 0.35; sunLight.shadow.radius = 2;
+let shadowHalf = 0;
 scene.add(sunLight, sunLight.target);
 
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), new THREE.MeshStandardMaterial({ color: 0xd3cdbf, roughness: 1, depthWrite: false }));
+// Bare ground between mapped features: fine paving/earth texture whose UVs follow the world.
+const GROUND_M = GROUND_METRES.plain;
+const groundMat = groundMaterial("plain", "#aaa496", { depthWrite: false, roughness: 1 }).clone();
+groundMat.map = groundMat.map!.clone(); groundMat.normalMap = groundMat.normalMap!.clone();
+for (const t of [groundMat.map, groundMat.normalMap]) t.repeat.set(40000 / GROUND_M, 40000 / GROUND_M);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), groundMat);
 ground.renderOrder = -1;
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
 scene.add(ground);
@@ -87,12 +104,52 @@ controls.pitch = THREE.MathUtils.degToRad(num("pitch", -32));
 
 // Ambient occlusion (soft contact shadows in corners and streets). Off in agent renders for speed
 // (?ao=1 forces it on) and when the viewer picks "low" graphics.
-const AO = params.get("ao") === "1" || (!RENDER && params.get("ao") !== "0" && (() => { try { return localStorage.getItem("se-gfx") !== "low"; } catch { return true; } })());
+// ---------------------------------------------------------------- graphics quality
+// Low by default (smooth on any laptop or phone). "Auto" picks Ultra when the browser runs the
+// WebGPU build, and steps down by itself if the frame rate drops. Viewers can pick a level.
+type Tier = "low" | "high" | "ultra";
+const TIER_ORDER: Tier[] = ["low", "high", "ultra"];
+const MOBILE = matchMedia("(pointer: coarse)").matches;
+const TIERS: Record<Tier, { ratio: number; shadow: number; ao: boolean }> = {
+  low: { ratio: 1, shadow: 0, ao: false },
+  high: { ratio: 1.5, shadow: 2048, ao: true },
+  ultra: { ratio: MOBILE ? 1.5 : 2, shadow: MOBILE ? 2048 : 4096, ao: true },
+};
+type GfxPref = "auto" | Tier;
+let gfxPref: GfxPref = (() => {
+  try { const v = localStorage.getItem("se-gfx"); return v === "low" || v === "high" || v === "ultra" ? v : "auto"; } catch { return "auto"; }
+})();
+const autoTier = (): Tier => (GPU ? "ultra" : "low");
+let tier: Tier = RENDER
+  ? (params.get("gfx") as Tier | null) ?? (SOFTWARE ? "high" : "ultra") // agent renders: as detailed as the machine allows
+  : gfxPref === "auto" ? autoTier() : gfxPref;
 let composer: { render(): void; setSize(w: number, h: number): void } | null = null;
-if (AO) {
-  composer = GPU
-    ? (await import("./gpu")).createAO(renderer as never, scene as never, camera as never)
-    : (await import("./ao-webgl")).createAO(renderer, scene, camera);
+let aoComposer: { render(): void; setSize(w: number, h: number): void } | null = null;
+async function applyTier(t: Tier) {
+  tier = t;
+  const T = TIERS[t];
+  renderer.setPixelRatio(Math.min(devicePixelRatio, T.ratio));
+  const shadow = RENDER && SOFTWARE ? 1024 : T.shadow;
+  sunLight.castShadow = shadow > 0;
+  if (shadow && shadow !== SHADOW) {
+    SHADOW = shadow;
+    sunLight.shadow.mapSize.set(shadow, shadow);
+    sunLight.shadow.map?.dispose(); (sunLight.shadow as { map: unknown }).map = null; // recreated at the new size
+  }
+  const wantAO = params.get("ao") === "1" || (params.get("ao") !== "0" && T.ao && !(RENDER && SOFTWARE));
+  if (wantAO && !aoComposer) {
+    aoComposer = GPU
+      ? (await import("./gpu")).createAO(renderer as never, scene as never, camera as never)
+      : (await import("./ao-webgl")).createAO(renderer, scene, camera);
+  }
+  composer = wantAO ? aoComposer : null;
+  resize();
+  updateGfxButton();
+}
+function updateGfxButton() {
+  const b = document.getElementById("gfx");
+  const name = (x: string) => x[0].toUpperCase() + x.slice(1);
+  if (b) b.textContent = `Graphics: ${gfxPref === "auto" ? `Auto (${name(tier)})` : name(tier)}`;
 }
 
 function resize() {
@@ -100,7 +157,8 @@ function resize() {
   renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   composer?.setSize(w, h);
 }
-addEventListener("resize", resize); resize();
+addEventListener("resize", resize);
+await applyTier(tier);
 
 /** Ground point the camera is looking at (or below it if looking up). */
 function lookPoint(): THREE.Vector3 {
@@ -406,8 +464,14 @@ function openReport(b?: ResolvedBuilding) {
 $<HTMLButtonElement>("#report").onclick = () => openReport(selected?.building);
 
 // graphics quality (remembered per browser; reloads to apply)
-$<HTMLButtonElement>("#gfx").textContent = `Graphics: ${LOW_GFX ? "Low" : "High"}`;
-$<HTMLButtonElement>("#gfx").onclick = () => { try { localStorage.setItem("se-gfx", LOW_GFX ? "high" : "low"); } catch { /* ignore */ } location.reload(); };
+updateGfxButton();
+$<HTMLButtonElement>("#gfx").onclick = () => {
+  // Auto → Low → High → Ultra → Auto
+  const cycle: GfxPref[] = ["auto", "low", "high", "ultra"];
+  gfxPref = cycle[(cycle.indexOf(gfxPref) + 1) % cycle.length];
+  try { localStorage.setItem("se-gfx", gfxPref); } catch { /* ignore */ }
+  void applyTier(gfxPref === "auto" ? autoTier() : gfxPref);
+};
 
 // export
 $<HTMLButtonElement>("#export").onclick = () => {
@@ -529,13 +593,95 @@ function flyTo([lon, lat]: [number, number]) {
   controls.glideTo(new THREE.Vector3(x, 0, z), 40, -35, 180);
 }
 
+// ---------------------------------------------------------------- render cameras inside buildings
+/** The building (id) whose walls enclose point p, if any. */
+function buildingAt(p: THREE.Vector3): string | null {
+  const ll = proj.lonLat(p.x, p.z) as [number, number];
+  for (const t of world.tiles.values()) {
+    if (!bboxIntersects(t.bundle.base.bbox, [ll[0], ll[1], ll[0], ll[1]])) continue;
+    for (const b of t.buildings.values()) {
+      if (b.hidden) continue;
+      for (const v of b.volumes) {
+        if (p.y < v.minHeight - 0.1 || p.y > v.height + (v.roof.height ?? 0)) continue;
+        if (v.polygons.some((poly) => pointInLL(ll, poly.outer as [number, number][]) && !poly.holes.some((h) => pointInLL(ll, h as [number, number][])))) return b.id;
+      }
+    }
+  }
+  return null;
+}
+function pointInLL(p: [number, number], ring: [number, number][]) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+/**
+ * Agent renders: a camera standing inside another building shows only a wall. With a target,
+ * walk the camera towards it until it's in the open; either way report what happened.
+ */
+function unblockCamera() {
+  const report: { insideOf: string | null; movedMetres: number } = { insideOf: buildingAt(camera.position), movedMetres: 0 };
+  if (report.insideOf && target && report.insideOf !== target) {
+    const b = [...world.tiles.values()].map((t) => t.buildings.get(target)).find(Boolean);
+    if (b) {
+      const [tx, tz] = proj.xz(b.centroid);
+      const start = camera.position.clone(), dir = new THREE.Vector3(tx - start.x, 0, tz - start.z);
+      const total = dir.length(); dir.normalize();
+      for (let d = 1; d < total; d += 1) {
+        const q = start.clone().addScaledVector(dir, d);
+        const at = buildingAt(q);
+        if (at === target) break;
+        if (!at) { camera.position.copy(q); report.movedMetres = d; break; }
+      }
+      const f = new THREE.Vector3(tx, camera.position.y, tz).sub(camera.position).normalize();
+      controls.yaw = Math.atan2(f.x, -f.z);
+    }
+  }
+  (window as unknown as { __SEEEARTH_CAMERA__: unknown }).__SEEEARTH_CAMERA__ = { ...report, stillInside: buildingAt(camera.position) };
+}
+
+/** Which buildings are actually visible in the frame, and which of the agent's drafts shaped them. */
+function seenInFrame() {
+  camera.updateMatrixWorld();
+  const buildings = new Map<string, number>(), drafts = new Set<number>();
+  const N = 40, M = 26;
+  for (let i = 0; i < N; i++) for (let j = 0; j < M; j++) {
+    const p = pickAt(((i + 0.5) / N) * 2 - 1, ((j + 0.5) / M) * 2 - 1);
+    if (!p) continue;
+    buildings.set(p.building.id, (buildings.get(p.building.id) ?? 0) + 1);
+    for (const l of p.building.layers) if ("id" in l && typeof l.id === "number" && l.id >= 1e9) drafts.add(l.id - 1e9);
+  }
+  // share of the frame each building fills (0–1), biggest first
+  const share = [...buildings].sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ id, share: Math.round((n / (N * M)) * 1000) / 1000 }));
+  return { buildings: share, drafts: [...drafts].sort((a, b) => a - b) };
+}
+Object.assign(window, { __SEEEARTH_SEEN__: () => seenInFrame() });
+
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
 let readyFrames = 0;
 let tick = 0;
+// Auto quality: if the frame rate stays low once the map has loaded, step down a level.
+const fpsWin = { t: 0, n: 0 };
+function watchFps(raw: number) {
+  if (RENDER || gfxPref !== "auto" || tier === "low" || document.hidden || raw > 0.5 || !loadingEl.hidden) { fpsWin.t = fpsWin.n = 0; return; }
+  fpsWin.t += raw; fpsWin.n++;
+  if (fpsWin.t < 4) return;
+  const fps = fpsWin.n / fpsWin.t;
+  fpsWin.t = fpsWin.n = 0;
+  if (fps < 28) {
+    void applyTier(TIER_ORDER[TIER_ORDER.indexOf(tier) - 1]);
+    toast(`Graphics lowered to ${tier === "high" ? "High" : "Low"} to keep things smooth (change it in the menu)`);
+  }
+}
+
 function frame() {
   clock.update();
-  const dt = Math.min(clock.getDelta(), 0.1);
+  const raw = clock.getDelta();
+  watchFps(raw);
+  const dt = Math.min(raw, 0.1);
   if (mode === "walk") walker.update(dt, input);
   else if (mode === "fly") plane.update(dt, input);
   else { if (locked()) controls.look(input.dx, input.dy); controls.update(dt); }
@@ -544,11 +690,20 @@ function frame() {
   // not wherever the initial camera happens to be looking.
   const lp = !framed ? new THREE.Vector3(0, 0, 0) : mode === "walk" ? walker.position.clone() : mode === "fly" ? plane.position.clone().setY(0) : lookPoint();
   if (tick++ % 10 === 0) world.update(camera, lp);
-  // shadows follow what you're looking at
-  const focus = mode === "explore" ? lp : mode === "walk" ? walker.position : plane.position.clone().setY(0);
+  // Shadows cover what you're looking at: a tight box (sharp shadows) at street level, wider from the air.
+  const half = THREE.MathUtils.clamp(Math.round((camera.position.y * 1.3 + 90) / 20) * 20, 100, 700);
+  if (half !== shadowHalf) {
+    shadowHalf = half; sc.left = sc.bottom = -half; sc.right = sc.top = half; sc.updateProjectionMatrix();
+  }
+  const fw = controls.forward();
+  const focus = mode === "walk" ? walker.position.clone() : mode === "fly" ? plane.position.clone().setY(0)
+    : new THREE.Vector3(camera.position.x, 0, camera.position.z).addScaledVector(new THREE.Vector3(fw.x, 0, fw.z).normalize(), Math.hypot(fw.x, fw.z) > 0.05 ? half * 0.6 : 0);
+  // snap to shadow texels so shadows don't shimmer as the camera moves
+  const texel = (2 * half) / SHADOW; focus.x = Math.round(focus.x / texel) * texel; focus.z = Math.round(focus.z / texel) * texel;
   sunLight.position.set(focus.x + sun.x * 1200, sun.y * 1200, focus.z + sun.z * 1200);
   sunLight.target.position.set(focus.x, 0, focus.z);
   ground.position.set(camera.position.x, 0, camera.position.z);
+  for (const t of [groundMat.map!, groundMat.normalMap!]) t.offset.set((camera.position.x / GROUND_M) % 1, (-camera.position.z / GROUND_M) % 1);
   sky.position.copy(camera.position);
   const alt = camera.position.y;
   (scene.fog as THREE.Fog).near = 600 + alt * 2; (scene.fog as THREE.Fog).far = 2500 + alt * 6;
@@ -556,8 +711,10 @@ function frame() {
   world.pump(6);       // build queued tiles a few milliseconds per frame, so loading never stutters
   if (composer) composer.render(); else renderer.render(scene, camera);
   if (RENDER && !window.__SEEEARTH_READY__) {
-    if (framed && world.allLoaded(world.wanted(camera, lp)) && world.assetsPending === 0) { if (++readyFrames > 8) window.__SEEEARTH_READY__ = true; }
-    else readyFrames = 0;
+    if (framed && world.allLoaded(world.wanted(camera, lp)) && world.assetsPending === 0) {
+      if (readyFrames === 6) unblockCamera();
+      if (++readyFrames > 8) window.__SEEEARTH_READY__ = true;
+    } else readyFrames = 0;
   }
   requestAnimationFrame(frame);
 }

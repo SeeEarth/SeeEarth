@@ -1,7 +1,7 @@
 // Turn resolved buildings (style specs) into batched three.js meshes.
 import * as THREE from "three";
 import type { ResolvedBuilding, ResolvedVolume, LL } from "@seeearth/core";
-import { facadeMaterial, flatMaterial, groundFloorMaterial } from "./textures";
+import { facadeMaterial, flatMaterial, groundFloorMaterial, roofKind, roofMaterial } from "./textures";
 import type { Projector } from "./geo";
 
 type V2 = [number, number]; // (east, north) metres
@@ -24,7 +24,17 @@ export class Buckets {
     }
     k.pos.push(...a, ...b, ...c);
     k.nrm.push(...nn, ...nn, ...nn);
-    k.uv.push(...uva, ...uvb, ...uvc);
+    if ((m as THREE.Material).userData.planarUV) {
+      // u along the slope's contour (the eaves), v up the slope; flat faces use x/z
+      const s = (m as THREE.Material).userData.planarUV as number;
+      let tx = -nn[2], tz = nn[0];
+      const tl = Math.hypot(tx, tz);
+      if (tl < 0.05) { tx = 1; tz = 0; } else { tx /= tl; tz /= tl; }
+      // bitangent = n × t
+      const bx = nn[1] * tz, by = nn[2] * tx - nn[0] * tz, bz = -nn[1] * tx;
+      const uvOf = (p: number[]) => [(p[0] * tx + p[2] * tz) / s, (p[0] * bx + p[1] * by + p[2] * bz) / s];
+      k.uv.push(...uvOf(a), ...uvOf(b), ...uvOf(c));
+    } else k.uv.push(...uva, ...uvb, ...uvc);
     k.owners.push(owner);
   }
   meshes(): THREE.Mesh[] {
@@ -83,8 +93,17 @@ function orientedRect(r: V2[], forcedDir?: number) {
 
 export interface BuildContext { proj: Projector; renderer: THREE.WebGLRenderer }
 
-function wallMaterials(v: ResolvedVolume, ctx: BuildContext) {
-  const f = v.facade;
+/** Three subtle shades per colour, picked per building, so a street of identical specs varies. */
+function vary(hex: string, owner: string): string {
+  let h = 0; for (let i = 0; i < owner.length; i++) h = (h * 31 + owner.charCodeAt(i)) | 0;
+  const k = ((h >>> 0) % 3) - 1;
+  if (!k) return hex;
+  const c = new THREE.Color(hex); c.offsetHSL(0, 0, k * 0.035);
+  return "#" + c.getHexString();
+}
+
+function wallMaterials(v: ResolvedVolume, ctx: BuildContext, owner: string) {
+  const f = { ...v.facade, color: vary(v.facade.color, owner) };
   const pattern = f.windows?.pattern ?? (f.material === "glass" ? "curtain" : v.height < 4 && v.floors <= 1 ? "sparse" : "grid");
   return facadeMaterial({
     material: f.material, color: f.color, pattern, trim: f.trim,
@@ -94,12 +113,16 @@ function wallMaterials(v: ResolvedVolume, ctx: BuildContext) {
 }
 
 function addVolume(B: Buckets, owner: string, v: ResolvedVolume, ctx: BuildContext) {
-  const wallMat = wallMaterials(v, ctx);
+  const wallMat = wallMaterials(v, ctx, owner);
   const bay = v.facade.windows?.bay ?? 3.2;
   const gf = v.groundFloor?.kind && v.minHeight < 0.5 ? v.groundFloor : undefined;
   const gfH = gf ? Math.min(gf.height ?? 4.2, v.height * 0.6) : 0;
   const gfMat = gf ? groundFloorMaterial(gf.kind!, gf.color ?? v.facade.color, ctx.renderer) : null;
-  const roofMat = flatMaterial(v.roof.color, { side: THREE.DoubleSide });
+  const pitched = !["flat", "none"].includes(v.roof.shape);
+  const domed = v.roof.shape === "dome" || v.roof.shape === "onion";
+  const rk = roofKind((v.roof as { material?: string }).material, v.roof.color, pitched);
+  const roofMat = roofMaterial(domed && rk === "slate" ? "metal" : rk, v.roof.color);
+  roofMat.userData.planarUV = 2;
 
   for (const poly of v.polygons) {
     const outer = ccw(clean(poly.outer.map((p) => ctx.proj.en(p))));
@@ -154,7 +177,11 @@ function addVolume(B: Buckets, owner: string, v: ResolvedVolume, ctx: BuildConte
       }
     };
 
-    if (shape === "flat" || shape === "none" || rh <= 0.05) { roofFlat(() => top); continue; }
+    if (shape === "flat" || shape === "none" || rh <= 0.05) {
+      // a pitched roof we can't draw on this footprint becomes a flat deck, not flat slates
+      if (pitched) { roofMatOverride = roofMaterial("membrane", v.roof.color); roofMatOverride.userData.planarUV = 2; }
+      roofFlat(() => top); roofMatOverride = null; continue;
+    }
     if (shape === "skillion") { roofFlat(topAt); continue; }
     if (shape === "pyramidal") {
       const c: V2 = [outer.reduce((s, p) => s + p[0], 0) / outer.length, outer.reduce((s, p) => s + p[1], 0) / outer.length];
@@ -187,7 +214,8 @@ function addVolume(B: Buckets, owner: string, v: ResolvedVolume, ctx: BuildConte
     if (shape === "dome" || shape === "onion") {
       // the deck around a dome takes the wall trim colour, not the dome colour
       const deckCol = new THREE.Color(v.facade.trim ?? v.facade.color).offsetHSL(0, 0, -0.06);
-      const deck = flatMaterial("#" + deckCol.getHexString(), { side: THREE.DoubleSide });
+      const deck = roofMaterial("membrane", "#" + deckCol.getHexString());
+      deck.userData.planarUV = 2;
       roofMatOverride = deck; roofFlat(() => top); roofMatOverride = null;
       const r = rect.hw * 0.95;
       const geo = shape === "dome"

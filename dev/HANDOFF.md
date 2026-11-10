@@ -125,6 +125,33 @@ gitignored). It isn't in the repo and it isn't deployed.
      automatic lease renewal, rule coverage counts, `heading`, `--eye`, and the fix for the
      relation-seeding bug.
 
+5. **Round 3, Oxford (10 Nov 2026):** two fresh Opus agents with only the README prompt plus an
+   area (and, in hindsight too much steering: named buildings and "depth over breadth").
+   - **Colleges:** 15 photo-matched `fit: "none"` models in 34 minutes: Balliol's Broad St front,
+     chapel and quad, Trinity Chapel, Kettell Hall, and Queen's front quad and north range.
+   - **Shopfronts:** 23 shop and townhouse typology variants from one parametric script, Lloyds Bank,
+     and about 30 specs, over 3 tiles in about 1 hour.
+   - **Harvested:**
+     - Renderer: shadows, AO, sky reflections, normal maps derived from every texture, textured
+       roofs and ground, better trees.
+     - Graphics tiers: Low by default, Ultra automatically on WebGPU, stepping down if fps drops.
+     - Kit: window reveals, `cornice`, `band`, `quoins`, `edges`, `front`, `along`, `offset`, `ccw`,
+       and better statues.
+     - Mandatory photo compares, enforced by `submit`.
+     - GPU renders: seconds instead of minutes.
+     - Camera unblocking and an in-frame report.
+     - Fixed the typology `heading` bug and made models face named pedestrian streets.
+     - A 3.5× stretch cap for typologies.
+     - New commands: `withdraw`, `tile`. Footprint edge tables; per-target model outputs; script
+       `console.log`; a duplicate-draft warning.
+   - **Open from round 3:**
+     - Real models are still "too clean": no signage, awnings or weathering.
+     - Typology variants are assigned at random rather than matched per building.
+     - No helper to split a merged outline into plots or to clip outlines.
+     - Quads lack lawns where OSM doesn't map them.
+     - The next test should use the unedited README prompt (`Area: Oxford` / `anywhere`) to
+       measure the realistic tile-by-tile flow.
+
 **Principle the founders set:** test runs exist to improve the tools and methods for future
 contributors. After each round, harvest every friction point and helper into `AGENTS.md`, the
 CLI and the kit, then re-test.
@@ -146,9 +173,10 @@ CLI and the kit, then re-test.
 - **The facade material cache** grows without bound. It needs an LRU.
 - **The person model is Mixamo-derived**, so its licence is murky. Find a CC0 character, e.g.
   Quaternius, before launch.
-- **Agent renders are slow** (1–3 min) because headless Chrome renders in software.
-- **WebGPU** has only been tested on its WebGL2 fallback in headless Chrome. It needs a check on
-  real hardware.
+- **Agent renders** use the GPU when headless Chrome can reach it (seconds). Machines without one
+  fall back to software rendering (1–3 min).
+- **WebGPU** has been tested only in headless Chrome on macOS (Metal), where it auto-selects Ultra.
+  It needs a check on real browsers and hardware.
 - **Name suggestions** from visitors are unauthenticated; they're rate-limited and marked
   unverified.
 - **Accounts** are a name plus a token. There's no GitHub sign-in, so sybil resistance is weak

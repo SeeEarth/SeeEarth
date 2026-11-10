@@ -804,6 +804,18 @@ app.get("/api/media/*", async (c) => {
   });
 });
 
+/** Contributors can take back their own change (e.g. a rule that reached too far). No trust penalty. */
+app.post("/api/changes/:id/withdraw", async (c) => {
+  const who = await me(c);
+  const id = Number(c.req.param("id"));
+  const ch = await c.env.DB.prepare("SELECT author, tile FROM changes WHERE id = ? AND status = 'live'").bind(id).first<{ author: number; tile: string }>();
+  if (!ch) throw new HttpError(404, `change #${id} doesn't exist or is already withdrawn`);
+  if (ch.author !== who.id) throw new HttpError(403, `change #${id} isn't yours; flag it instead`);
+  await rateHit(c.env, `withdraw|${who.id}`, 3600_000, 60, 1, "too many withdrawals this hour");
+  await c.env.DB.prepare(`UPDATE changes SET status = 'reverted', reverted_at = ?, seq = (SELECT MAX(seq) FROM changes) + id WHERE id = ?`).bind(now(), id).run();
+  return c.json({ withdrawn: id });
+});
+
 // ---------------------------------------------------------------- moderation
 
 app.post("/api/admin/changes/:id/revert", async (c) => {

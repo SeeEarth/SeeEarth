@@ -1,8 +1,9 @@
 // Streams tiles around the camera and builds their meshes.
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { enhanceMaterial } from "./surface";
 import {
-  bboxIntersects, lonLatToTile, orientedRectLL, parseTileKey, resolveBuildings, ringAreaM2, tileKey, tileRing,
+  bboxIntersects, hashString, lonLatToTile, orientedRectLL, parseTileKey, resolveBuildings, ringAreaM2, tileKey, tileRing,
   type BBox, type ResolvedBuilding, type StoredChange, type TileBundle,
 } from "@seeearth/core";
 import { fetchTile, API } from "./api";
@@ -32,6 +33,8 @@ declare global {
 }
 
 const gltf = new GLTFLoader();
+/** Largest factor a typology model is stretched along its width before the building falls back to its described shape. */
+const MAX_STRETCH = 3.5;
 
 /** Each uploaded model is downloaded once and shared by every building that uses it. */
 const modelCache = new Map<string, Promise<{ scene: THREE.Object3D; size: THREE.Vector3; min: THREE.Vector3 } | null>>();
@@ -40,7 +43,7 @@ function loadModel(key: string) {
   if (!p) {
     p = gltf.loadAsync(`${API}/api/assets/${key}.glb`).then((g) => {
       const box = new THREE.Box3().setFromObject(g.scene);
-      g.scene.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.castShadow = m.receiveShadow = true; m.geometry.computeBoundsTree(); } });
+      g.scene.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.castShadow = m.receiveShadow = true; m.geometry.computeBoundsTree(); for (const mat of Array.isArray(m.material) ? m.material : [m.material]) enhanceMaterial(mat); } });
       return { scene: g.scene, size: box.getSize(new THREE.Vector3()), min: box.min.clone() };
     }).catch((e) => { console.warn("model", key, e); return null; });
     modelCache.set(key, p);
@@ -131,12 +134,13 @@ export class World {
   private draftFor(bundle: TileBundle): StoredChange[] {
     const d = window.__SEEEARTH_DRAFT__;
     if (!d?.changes?.length) return [];
+    // id = 1e9 + the draft's position in the list the CLI injected, so renders can report which drafts they showed
     return d.changes
-      .filter((c) => {
+      .map((change, i) => ({ id: 1e9 + i, tile: bundle.base.tile, author: "(your draft)", createdAt: Date.now() + i, change }))
+      .filter(({ change: c }) => {
         try { return c.kind === "rule" ? bboxIntersects(c.scope.bbox as BBox, bundle.base.bbox) : d.tile === bundle.base.tile; }
         catch { return false; } // malformed draft: the CLI validates before injecting, but never break the view
-      })
-      .map((change, i) => ({ id: 1e9 + i, tile: bundle.base.tile, author: "(your draft)", createdAt: Date.now() + i, change }));
+      });
   }
 
   /** Re-download a loaded tile and rebuild it (live updates). */
@@ -219,10 +223,12 @@ export class World {
       if (!tile.alive) return;
       const byVariant = new Map<string, { m: THREE.Matrix4; owner: string }[]>();
       // road points in this tile, for turning model fronts towards the street
-      const roadPts: [number, number][] = [];
+      // (streets first; named pedestrian streets and cycleways count where no street is within 30 m)
+      const roadPts: [number, number][] = [], pathPts: [number, number][] = [];
       for (const r of tile.bundle.base.roads) {
-        if (/footway|path|steps|cycleway|track|service/.test(r.tags.highway ?? "")) continue;
-        for (const p of r.line) roadPts.push(this.proj.xz(p));
+        const minor = /footway|path|steps|cycleway|track|service|pedestrian/.test(r.tags.highway ?? "");
+        if (minor && !r.tags.name) continue; // unnamed paths cross yards and quads: not a street front
+        for (const p of r.line) (minor ? pathPts : roadPts).push(this.proj.xz(p));
       }
       for (const b of list) {
         const m = b.model!;
@@ -245,6 +251,34 @@ export class World {
         // stretched box-shaped model: keep their procedural shape instead.
         const fill = Math.abs(ringAreaM2(ring)) / Math.max(1, 4 * r.hl * r.hw);
         if (m.fit !== "uniform" && fill < 0.7) { this.fallbackVolumes(b, tile); continue; }
+        const [cx, cz] = this.proj.xz(r.at(0, 0));
+        // nearest street (or, failing that within 30 m, the nearest path or pedestrian street)
+        const nearest = (pts: [number, number][]) => { let best: [number, number] | null = null, bd = Infinity; for (const p of pts) { const d = (p[0] - cx) ** 2 + (p[1] - cz) ** 2; if (d < bd) { bd = d; best = p; } } return { p: best, d: bd }; };
+        let nr = nearest(roadPts);
+        if (nr.d > 30 * 30) { const np = nearest(pathPts); if (np.d < nr.d) nr = np; }
+        const near = nr.p;
+        if (m.heading != null) {
+          // Explicit compass heading for the front: pick the footprint side facing closest to it,
+          // then fit the model's width (X) along that side and its depth (Z) into the plot. This
+          // works for wide ranges and for narrow, deep shop plots alike.
+          const hd = THREE.MathUtils.degToRad(m.heading), want = [Math.sin(hd), Math.cos(hd)]; // (east, north)
+          const u = r.ax, v: [number, number] = [-r.ax[1], r.ax[0]];
+          const sides = [{ n: v, w: r.hl, d: r.hw }, { n: [-v[0], -v[1]], w: r.hl, d: r.hw }, { n: u, w: r.hw, d: r.hl }, { n: [-u[0], -u[1]], w: r.hw, d: r.hl }];
+          const side = sides.sort((a, c) => (c.n[0] * want[0] + c.n[1] * want[1]) - (a.n[0] * want[0] + a.n[1] * want[1]))[0];
+          const aspect = side.w / Math.max(side.d, 0.5);
+          const ranked = variants.map(([key, v]) => ({ key, v, score: Math.abs(Math.log(v.size.x / Math.max(0.5, v.size.z) / aspect)) })).sort((a, c) => a.score - c.score);
+          const pick = ranked[m.seed % Math.min(3, ranked.length)];
+          let sx = (2 * side.w) / pick.v.size.x, sz = (2 * side.d) / pick.v.size.z, sy = (sx + sz) / 2;
+          if (sx > MAX_STRETCH && m.fit !== "uniform") { this.fallbackVolumes(b, tile); continue; } // one shop stretched over a whole block
+          if (m.fit === "uniform") sx = sz = sy = Math.min(sx, sz);
+          else { const total = pick.v.size.y * sy, target = Math.max(4, m.height); if (total > target * 1.8 || total < target * 0.6) sy = (target * 1.2) / pick.v.size.y; }
+          // model −Z → side.n: a rotation by yaw sends −Z to (east −sin yaw, north cos yaw)
+          const yaw = Math.atan2(-side.n[0], side.n[1]);
+          const place = new THREE.Matrix4().compose(new THREE.Vector3(cx, m.minHeight, cz), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw), new THREE.Vector3(sx, sy, sz));
+          place.multiply(new THREE.Matrix4().makeTranslation(-(pick.v.min.x + pick.v.size.x / 2), -pick.v.min.y, -(pick.v.min.z + pick.v.size.z / 2)));
+          byVariant.set(pick.key, [...(byVariant.get(pick.key) ?? []), { m: place, owner: b.id }]);
+          continue;
+        }
         const fpAspect = r.hl / Math.max(r.hw, 0.5);
         // rank variants by how well their proportions match this footprint; pick among the best few
         const ranked = variants.map(([key, v]) => {
@@ -253,6 +287,9 @@ export class World {
         }).sort((a, c) => a.score - c.score);
         const pick = ranked[m.seed % Math.min(3, ranked.length)];
         const sl = (2 * r.hl) / pick.long, ss = (2 * r.hw) / pick.short;
+        // a typology is built at a typical real size: stretched more than 3.5× (a merged block,
+        // a whole terrace drawn as one outline) it looks absurd, so draw the outline instead
+        if (sl > MAX_STRETCH && m.fit !== "uniform") { this.fallbackVolumes(b, tile); continue; }
         let sx = sl, sz = ss, sy = (sl + ss) / 2;
         if (m.fit === "uniform") sx = sz = sy = Math.min(sl, ss);
         else {
@@ -260,17 +297,11 @@ export class World {
           const total = pick.v.size.y * sy, target = Math.max(4, m.height);
           if (total > target * 1.8 || total < target * 0.6) sy = (target * 1.2) / pick.v.size.y;
         }
-        const [cx, cz] = this.proj.xz(r.at(0, 0));
         // Which way should the model's front (−Z) face? Towards the nearest road.
-        let near: [number, number] | null = null, nd = Infinity;
-        for (const p of roadPts) { const d = (p[0] - cx) ** 2 + (p[1] - cz) ** 2; if (d < nd) { nd = d; near = p; } }
         const baseYaw = Math.atan2(r.ax[1], r.ax[0]) + (pick.turn ? Math.PI / 2 : 0);
         const frontAt = (yaw: number) => new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-        let yaw = baseYaw + (pick.turn ? 0 : 0);
-        if (m.heading != null) {
-          // explicit compass heading for the front (−Z): 0 = north (−z in the scene), 90 = east (+x)
-          yaw = -THREE.MathUtils.degToRad(m.heading) + (pick.turn ? Math.PI / 2 : 0);
-        } else if (near) { const f = frontAt(baseYaw); if (f.x * (near[0] - cx) + f.z * (near[1] - cz) < 0) yaw += Math.PI; }
+        let yaw = baseYaw;
+        if (near) { const f = frontAt(baseYaw); if (f.x * (near[0] - cx) + f.z * (near[1] - cz) < 0) yaw += Math.PI; }
         else if ((m.seed >> 3) % 2) yaw += Math.PI;
         const place = new THREE.Matrix4().compose(
           new THREE.Vector3(cx, m.minHeight, cz),
@@ -290,6 +321,17 @@ export class World {
           const inst = new THREE.InstancedMesh(mesh.geometry, mesh.material, placements.length);
           placements.forEach((p, i) => inst.setMatrixAt(i, p.m.clone().multiply(mesh.matrixWorld)));
           inst.instanceMatrix.needsUpdate = true;
+          // Repeated typology models: each house gets slightly different stone, render and roof
+          // weathering, so a terrace doesn't look copy-pasted. Glass and paint stay exact.
+          const mat = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial;
+          if (placements.length > 1 && mat.map) {
+            const c = new THREE.Color();
+            placements.forEach((p, i) => {
+              const h = hashString(p.owner);
+              const l = 0.9 + ((h & 255) / 255) * 0.14, warm = (((h >> 8) & 255) / 255 - 0.5) * 0.06;
+              inst.setColorAt(i, c.setRGB(l * (1 + warm), l, l * (1 - warm)));
+            });
+          }
           inst.computeBoundingSphere(); inst.computeBoundingBox();
           inst.castShadow = inst.receiveShadow = true;
           inst.userData = { shared: true, tile: tile.key, instanceOwners: placements.map((p) => p.owner) };

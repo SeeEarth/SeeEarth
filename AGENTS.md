@@ -66,6 +66,8 @@ go to section 7.
 | `context.json` | raw data for the tools; you don't need to read it |
 
 - If `claim --near` finds nothing left near that place, widen it with `--radius 60` or drop `--near`.
+- To work on one exact spot (for example to improve a finished street), find its tile with
+  `npm run se -- tile --lat 51.7525 --lon -1.2575`, then `claim --tile <key>`.
 - Only one tile at a time per work folder. If you are a **second agent session on the same
   machine**, claim with `--another`, then pass `--tile <key>` to every later command for that
   tile (submit, render, release…). For your next tile, run `claim --another` again, without `--tile`.
@@ -97,6 +99,9 @@ go to section 7.
      visual evidence**, don't write a rule that only repeats OSM's tags; leave it and say so in a
      release note.
    - Check a rule with `render --highlight`, which fades out everything your drafts don't touch.
+   - A rule `label` is 3–120 characters. If a submitted rule turns out to reach too far,
+     `npm run se -- withdraw <change id>` takes it back (only your own changes); then submit a
+     narrower one.
 3. **Notable buildings, top of `buildings.md` down.** For true landmarks, build a model and match
    it against photos (section 4.4). For the rest, a sourced description is fine. These are anything with a name, a
    `wikidata` tag, or a large area: mosques, churches, towers, malls, stations, universities,
@@ -137,21 +142,33 @@ go to section 7.
    `n:<slug>` (lowercase letters, digits and hyphens, e.g. `n:clock-tower`) with a `footprint` in
    `[lon, lat]`. Only do this when you can place it confidently (for example from
    Wikipedia/Wikidata coordinates and photos).
-5. **Check your work visually** for every notable building:
+5. **Check every change against a photo (required).** Render the same view as one of your
+   reference photos and look at them side by side:
    ```bash
-   npm run se -- render --target w123456 --heading 30 --pitch -20
+   npm run se -- render --target w123456 --heading 30 --pitch -20 --compare refs/front.jpg
    ```
-   This saves a PNG to `renders/` that includes your valid drafts. Open it and compare it with your
-   reference photos: proportions, colours, roof.
-   - `--heading` is the compass direction the camera **looks**. The camera stands on the opposite
-     side, so `--heading 0` views the south face, looking north. Photos rarely have a bearing, so
-     work it out from the street the photo was taken from, or render two headings (e.g. `0` and `180`).
-   - The camera distance auto-fits the building. `--dist <m>` overrides it.
-   - `render` without `--target` gives a tile overview (`--alt 250`).
-   - The **first render in a new area can take 1–3 minutes**. Run it with a long timeout (at least
-     5 minutes). If it warns that the target was never found, the picture is not of your
-     building: check the id. If it only warns about surrounding tiles, the picture is usable.
-   - Adjust and re-render, but at most 2–3 rounds per building.
+   This writes `renders/…-compare.png` (photo left, seeEarth right) and records which of your
+   drafts were visible in the frame. **`submit` refuses any draft that no compare has shown**, and
+   editing a draft after its compare needs a new one. For an area rule, compare one street it
+   covers. Name-only changes need no compare.
+   - Open the compare image, then write down the **3–5 biggest differences**, in this order:
+     massing and height, roofline (shape, dormers, chimneys, parapets), window rhythm and size,
+     wall material and colour, ground floor. Fix them and re-render. Stop when what's left is
+     ornament the kit can't express, usually after 2–3 rounds.
+   - `--heading` is the compass direction the camera **looks**. With `--target` the camera stands on
+     the opposite side, so `--heading 0` views the south face, looking north. Photos rarely have a
+     bearing, so work it out from the street the photo was taken from.
+   - **To recreate a photo exactly, place the camera yourself:** `--lat 51.75434 --lon -1.25668
+     --alt 1.7 --heading 160 --pitch 8 --fov 60` (no `--target`). Stand where the photographer
+     stood (a pavement, the middle of a quad). This is the most reliable way to line views up in
+     narrow streets and quads.
+   - With `--target`, the camera distance auto-fits; `--dist <m>` overrides it and `--eye 1.7`
+     lowers it to eye level. If the camera would stand inside another building, `render` moves it
+     out towards the target and says so.
+   - Every render prints what's **in frame** (building ids with the share of the picture they fill)
+     and which of your drafts are shown. If it says your target isn't visible, change the view.
+   - Renders take seconds on a machine with a GPU and 1–3 minutes without one (use a 5-minute
+     timeout). If it warns that the target was never found, the picture is not of your building.
 6. **Submit early and often:** after every ~5–10 changes.
    ```bash
    npm run se -- validate   # errors, plus the completeness your drafts would reach
@@ -337,18 +354,41 @@ Before building typologies, run `npm run se -- models` to see the models already
 Reusing someone's typology set in your own rule is faster than rebuilding it, and keeps a
 city consistent.
 
-### The method that works (from the Oxford test)
+### The method that works (from the Oxford tests)
 
 1. Collect 3–5 photos with `refs`, from different sides, and note the dimensions from Wikipedia.
 2. For a landmark, build on its **real footprint**:
    `npm run se -- model models/x.ts --target <id>` passes `params.footprint` (metres, origin at
    the footprint's centre, x = east, −Z = north), `params.holes`, `params.osmHeight` and
-   `params.size`. Use them with `k.prism`, `k.openingsAlong` and `k.parapetAlong`, and submit with
-   `"fit": "none"`. The model then stands exactly on the real footprint at real size, with nothing
-   scaled or flipped. The red outline in the preview is the real footprint.
+   `params.size`, and prints every footprint edge with its length and the compass direction it
+   faces, so you can tell which edge is the street front. Use `k.prism` for the walls,
+   `k.front(params.footprint, 180)` to find the south-facing street edge and place things along it,
+   and `k.openingsAlong`, `k.cornice`, `k.band`, `k.quoins` and `k.parapetAlong` for the rest.
+   Submit with `"fit": "none"`. The model then stands exactly on the real footprint at real size,
+   with nothing scaled or flipped. The red outline in the preview is the real footprint.
 3. Open the 4-side preview, compare it with the photos, and iterate.
-4. Upload, submit, then run the photo-matched `render --compare` loop (4.4) for 2–3 rounds.
+4. Upload, submit, then run the photo `render --compare` loop (2.2 step 5 and 4.4) for 2–3 rounds.
 5. Typologies: build each variant at a typical real size and use the default `fit: "stretch"`.
+6. One parametric script can serve several buildings: run it with a different `--target` each
+   time. Each target gets its own `.glb`, preview and `.key` (`models/<script>-<target>.*`), and the
+   script can branch on `params.target`. `console.log` output from the script is printed.
+7. One script can also make a whole typology set: pass `--params '{"color":"#e8dcc0","bays":3}'`
+   (read as `params` in the script) and `--name shop-cream` to name each variant's files.
+
+### What makes a model look real
+
+The camera and the light are unforgiving about flat walls. In rough order of payoff:
+- **Depth in the facade.** Windows set back in their openings (`k.opening` with a `surround` does
+  this: the glass sits ~20 cm behind a projecting surround, with a sill), a **cornice** at the
+  eaves (`k.cornice`), **string courses** between floors (`k.band`), a plinth, quoins on stone
+  corners (`k.quoins`). These catch shadow, which is what makes a facade read as solid.
+- **The roofline:** correct pitch, dormers, chimneys (with pots), parapets and gables. It's what
+  people recognise from a distance.
+- **Window rhythm:** count the bays in the photo and match them; get the window proportions right
+  (Georgian sashes are tall, about 1:1.8).
+- **Colour and material sampled from daylight photos**, not guessed. Light stone and render are
+  rarely brighter than `#e8e2d6`.
+- **The ground floor:** shopfronts with fascias, doors, arcades. It's what people see from the street.
 
 ### 4.1 Write a model script
 
@@ -375,10 +415,16 @@ Conventions:
 You can upload up to 60 models a day, so build variants deliberately rather than dozens of
 near-duplicates.
 
+A typology is never stretched more than 3.5× its own width: a footprint that big (a merged block,
+a whole terrace mapped as one outline) keeps its described shape. Describe such blocks with a
+spec, or build them on their footprint with `model --target`.
+
 Typology models in rules only go on **ordinary** buildings. A building with its own description,
 or one OSM already models in 3D parts, keeps its own shape. Footprints that aren't roughly
 rectangular (L-shapes, courtyards) keep their described shape too. Models are turned so their
-front (−Z) faces the nearest street.
+front (−Z) faces the nearest street (a named pedestrian street counts when no road is within
+30 m). For narrow, deep plots such as shops, set `heading` (4.3): the side of the plot that faces
+that way becomes the front, and the model's width (X) is fitted along it.
 
 Build it:
 
@@ -387,8 +433,8 @@ npm run se -- model models/college-range.ts            # writes models/college-r
 npm run se -- model models/college-range.ts --upload   # …and uploads it, printing the assetKey
 ```
 
-**Always open the `-preview.png`** (front, right, back and left views) and compare it with your
-photos before uploading. Iterate on the script until the proportions, materials, windows and
+**Always open the `-preview.png`** (views from −Z/north, +X/east, +Z/south and −X/west; for a
+typology, −Z is the front) and compare it with your photos before uploading. Iterate on the script until the proportions, materials, windows and
 roofline match. Budget: typology models ≤ 30,000 triangles; landmarks ≤ 150,000.
 
 ### 4.2 Kit reference
@@ -405,7 +451,11 @@ roofline match. Budget: typology models ≤ 30,000 triangles; landmarks ≤ 150,
 | `k.prism(ring, y0, y1, mat, holes?)` | a solid from a plan outline, e.g. `params.footprint`: walls of the real shape |
 | `k.openingsAlong(ring, y, w, h, kind, {spacing?, edges?, fill?, surround?, mullions?})` | windows or doors along every edge of an outline, facing outwards. `kind`: `rect` `arch` `gothic` `ogee` `round` |
 | `k.parapetAlong(ring, y, mat, {height?, crenellated?})` | a parapet or battlements following an outline |
-| `k.opening(w, h, kind, {fill?, surround?, surroundWidth?, mullions?})` | one window, door or niche (facing −Z) with a stone surround and mullions |
+| `k.cornice(ring, y, mat, {depth?, height?})`, `k.band(ring, y, mat, {depth?, height?})` | a moulded cornice / a string course, sill band or plinth, following an outline |
+| `k.quoins(ring, y0, y1, mat, {size?, course?})` | alternating corner stones on every outside corner |
+| `k.edges(ring)`, `k.front(ring, bearing, tol?)` | every edge with its length and the compass direction it faces; the longest edge facing `bearing` (e.g. 180 = south), with `.place(obj, u, y)` to stand an object `u` m along it, facing out |
+| `k.along(p0, p1, n, fn)`, `k.offset(ring, d)`, `k.ccw(ring)` | n evenly spaced bays between two points; grow/shrink an outline; normalise winding (all ring helpers accept either winding) |
+| `k.opening(w, h, kind, {fill?, surround?, surroundWidth?, mullions?, depth?, sill?, hood?})` | one window, door or niche (facing −Z). With a `surround`, the glass is set `depth` (0.2 m) back inside it, with a sill and an optional hood mould |
 | `k.face(obj, x, y, z, nx, nz)`, `k.wall(p0, p1, y0, h, t, mat)` | place an object facing an outward normal; a wall between two plan points |
 | `k.column(r, h, mat, {x, y, z, cap?})`, `k.balustrade(len, h, mat)`, `k.pinnacle(s, h, mat, x, y, z)`, `k.statue(h, mat, x, y, z)` | classical and Gothic details |
 | `k.lathe(profile, mat, {x, y, z, segments?})`, `k.ogeeProfile(r, h)`, `k.ngon(n, r, h, mat, {rTop?})`, `k.elevation(outline, t, mat, {x, y, z, rotY})` | domes, drums, urns and ogee caps; octagonal turrets; pediments and gables drawn in elevation |
@@ -446,13 +496,15 @@ Landmark (built with `model --target w4884600` on its real footprint):
   the real footprint. This is the best choice for landmarks.
 - `fit: "stretch"` (the default) stretches the model to fill the footprint's bounding rectangle.
   That's best for typologies.
-- `heading` (degrees, 0 = north, 90 = east) pins which way the model's front (−Z) faces. Set it
-  for landmarks, so a symmetric footprint never comes out reversed. Without it, models face the
-  nearest street.
+- `heading` (degrees, 0 = north, 90 = east) pins which way the model's front (−Z) faces. For
+  `fit: "none"` it rotates the model (leave it out: those models are already built facing north).
+  For typologies it picks the side of the footprint facing closest to `heading` as the front and
+  fits the model's width along that side. Without it, typologies face the nearest street.
 - `fit: "uniform"` keeps the model's proportions. It scales by the model's full bounding box, so
   keep cornices and steps within the footprint or the whole building shrinks. That's best for landmarks you modelled to
   their real size.
-- A model on an outline marked "has OSM 3D parts" replaces those parts.
+- A model on an outline marked "has OSM 3D parts" replaces those parts. A building's own model
+  also replaces `parts` and `towers` from earlier specs, so you don't need to clear them.
 
 ### 4.4 Match landmarks against photos
 
@@ -464,13 +516,12 @@ This is how you get recognisable landmarks:
 4. Recreate a photo's viewpoint and compare side by side:
    ```bash
    npm run se -- render --target w4884600 --heading 350 --pitch -12 --fov 50 --compare refs/radcam-south.jpg
+   # street-level photo, camera exactly where the photographer stood:
+   npm run se -- render --lat 51.75335 --lon -1.25402 --alt 1.7 --heading 350 --pitch 10 --fov 60 --compare refs/radcam-south.jpg
    ```
    This writes `renders/…-compare.png` with the photo on the left and seeEarth on the right.
-   For street-level photos add `--eye 1.7`, which puts the camera at that height, still facing
-   the target.
-   Adjust `--heading`, `--pitch`, `--dist` and `--fov` until the two views line up, then fix
-   whatever still differs in your model: proportions, heights, materials, details. Repeat for
-   another photo. Two or three rounds per landmark is normal.
+   Adjust the view until the two line up, then list the biggest differences (2.2 step 5) and fix
+   them in your model. Repeat for another photo. Two or three rounds per landmark is normal.
 
 `model` and `render` renew your lease automatically while you iterate. If a landmark's footprint
 is missing from `buildings.md`, check its OSM page: it may belong to a neighbouring tile (its centre
@@ -499,6 +550,9 @@ To work on a tile that's already finished (for example, to add models), claim it
 | `server busy` / `Overpass is busy` | wait a minute and retry. The base map is fetched from OSM on first use |
 | `drafts.json is not valid JSON` | fix the syntax (a trailing comma is the usual culprit) |
 | render says the target was never found | wrong id, or the tile didn't load. Check `buildings.md` and retry |
+| `submit` says drafts haven't been checked against a photo | run `render --compare refs/<photo>` with a view that shows them; the render lists which drafts it showed |
+| `claim --near` gave a tile far from the place | the tile there is taken or finished (claim says so). Improve a finished tile with `claim --tile <x-y>` |
+| `refs` says Commons is rate-limiting | wait a minute; meanwhile use web image search or Mapillary |
 | no Chrome for `render` | install Google Chrome, or run `npx playwright install chromium` |
 
 ## 7. Review tasks

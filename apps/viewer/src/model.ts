@@ -2,7 +2,7 @@
 // exports the result as .glb and renders preview images from four sides.
 import * as THREE from "three";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { skyEnvironment } from "./surface";
 import { kit, optimize } from "./kit";
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
@@ -12,10 +12,10 @@ renderer.toneMappingExposure = 0.9;
 renderer.shadowMap.enabled = true;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xd9e2ea);
-scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.35;
-scene.add(new THREE.HemisphereLight(0xdfeaf5, 0x8a7f6a, 1.3));
-const sun = new THREE.DirectionalLight(0xfff1dc, 2.6);
+scene.environment = skyEnvironment(renderer, new THREE.Vector3(-40, 80, -60).normalize());
+scene.environmentIntensity = 0.85;
+scene.add(new THREE.HemisphereLight(0xd6e4f2, 0x9a8a70, 0.7));
+const sun = new THREE.DirectionalLight(0xffeedd, 3.2);
 sun.position.set(-40, 80, -60); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
 scene.add(sun);
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), new THREE.MeshStandardMaterial({ color: 0xa9a49a, roughness: 1 }));
@@ -45,14 +45,16 @@ function previews(obj: THREE.Object3D, sizePx = 512): string {
   out.width = out.height = sizePx * 2;
   const g = out.getContext("2d")!;
   renderer.setSize(sizePx, sizePx, false);
-  const views: [string, number][] = [["front (-Z)", 180], ["right (+X)", 90], ["back (+Z)", 0], ["left (-X)", -90]];
+  // −Z is north for fit:"none" models (and the front for fitted typology models)
+  const views: [string, number][] = [["−Z  north / front", 180], ["+X  east", 90], ["+Z  south / back", 0], ["−X  west", -90]];
   views.forEach(([label, deg], i) => {
-    const a = THREE.MathUtils.degToRad(deg), dist = r / Math.tan(THREE.MathUtils.degToRad(20)) * 1.15;
+    // fit the whole bounding sphere, so long, deep models are never cropped from any side
+    const a = THREE.MathUtils.degToRad(deg), dist = Math.max(r / Math.tan(THREE.MathUtils.degToRad(20)), (s.length() / 2) / Math.sin(THREE.MathUtils.degToRad(20))) * 1.05;
     cam.position.set(c.x + Math.sin(a) * dist, c.y + dist * 0.35, c.z + Math.cos(a) * dist);
     cam.lookAt(c);
     renderer.render(scene, cam);
     g.drawImage(renderer.domElement, (i % 2) * sizePx, Math.floor(i / 2) * sizePx);
-    g.fillStyle = "rgba(0,0,0,0.55)"; g.fillRect((i % 2) * sizePx, Math.floor(i / 2) * sizePx, 150, 26);
+    g.fillStyle = "rgba(0,0,0,0.55)"; g.fillRect((i % 2) * sizePx, Math.floor(i / 2) * sizePx, 190, 26);
     g.fillStyle = "#fff"; g.font = "16px sans-serif"; g.fillText(label, (i % 2) * sizePx + 8, Math.floor(i / 2) * sizePx + 19);
   });
   return out.toDataURL("image/png").split(",")[1];

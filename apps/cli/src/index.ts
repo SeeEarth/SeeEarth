@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import {
-  inspectGlb, isNotable, LIMITS, notability, parseTileKey, pointInRing, ruleMatches, tileCenter, tileQuality, validateChange,
+  hullLL, inspectGlb, isNotable, LIMITS, lonLatToTile, ringAreaM2, tileKey, notability, parseTileKey, pointInRing, ruleMatches, tileCenter, tileQuality, validateChange,
   type RuleChange, type BaseTile, type ClaimResponse, type ReportInfo, type StoredChange, type TileBundle, type TileNote,
 } from "@seeearth/core";
 
@@ -256,21 +256,88 @@ function draftLabel(d: unknown): string {
 function checkDrafts(key: string, quiet = false) {
   const base = context(key).base;
   const list = drafts(key);
-  const valid: StoredChange["change"][] = [];
+  const valid: StoredChange["change"][] = [], validIdx: number[] = [];
   let bad = 0;
   list.forEach((d, i) => {
     const v = validateChange(d, base, { ruleMaxSpanDeg: leaseOf(key)?.ruleMaxSpanDeg });
     if (!v.ok) { bad++; if (!quiet) console.log(`✗ [${i}] ${draftLabel(d)}: ${v.errors.join("; ")}`); }
-    else valid.push(v.change!);
+    else { valid.push(v.change!); validIdx.push(i); }
     if (!quiet) for (const w of v.warnings) console.log(`! [${i}] ${draftLabel(d)}: ${w}`);
   });
-  return { list, valid, bad };
+  if (!quiet) {
+    const seen = new Map<string, number>();
+    list.forEach((d, i) => {
+      const t = (d as { kind?: string; target?: string }).kind === "building" ? (d as { target?: string }).target : undefined;
+      if (!t) return;
+      if (seen.has(t)) console.log(`! [${i}] ${t}: drafts [${seen.get(t)}] and [${i}] are both for ${t}; merge them into one (two drafts for one building get re-sent on every submit)`);
+      else seen.set(t, i);
+    });
+  }
+  return { list, valid, validIdx, bad };
 }
 
+/**
+ * A footprint's edges in local metres: length, the compass direction each faces and the nearest
+ * named street, so a script can tell which edge is the street front (k.front / k.edges do the same).
+ */
+function printEdges(ring: [number, number][], ctx: TileBundle) {
+  let a = 0; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j][0] * -ring[i][1] - ring[i][0] * -ring[j][1];
+  const ccw = a > 0;
+  console.error("  edges (index: length, faces, from → to):");
+  ring.forEach((p, i) => {
+    const q = ring[(i + 1) % ring.length], dx = q[0] - p[0], dz = q[1] - p[1], L = Math.hypot(dx, dz);
+    if (L < 0.5) return;
+    const [nx, nz] = ccw ? [-dz / L, dx / L] : [dz / L, -dx / L];
+    const bearing = (Math.round((Math.atan2(nx, -nz) * 180) / Math.PI) + 360) % 360;
+    const dir = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(bearing / 45) % 8];
+    console.error(`    ${String(i).padStart(2)}: ${L.toFixed(1).padStart(5)} m  faces ${String(bearing).padStart(3)}° ${dir.padEnd(2)}  [${p.join(", ")}] → [${q.join(", ")}]`);
+  });
+  void ctx;
+}
+
+// ---------------------------------------------------------------- photo compares
+// Every change is checked against a real photo before it's submitted: `render --compare` records
+// which drafts were visible in the frame, and `submit` refuses drafts no compare has shown.
+interface CompareRecord { at: number; ref: string; image: string; target?: string; drafts: string[]; buildings: { id: string; share: number }[] }
+const comparesPath = (key: string) => join(tileDir(key), "compares.json");
+const compares = (key: string) => readJSON<CompareRecord[]>(comparesPath(key), []);
+/** Changes that don't alter how anything looks (names, hiding) need no photo compare. */
+function needsCompare(d: unknown): boolean {
+  const o = d as { kind?: string; spec?: Record<string, unknown> };
+  if (o?.kind === "asset") return true;
+  if (o?.kind !== "building") return o?.kind === "rule";
+  return Object.keys(o.spec ?? {}).some((k) => !["name", "hidden"].includes(k));
+}
+
+// Renders use the machine's GPU when headless Chrome can reach it (seconds per render), and fall
+// back to software rendering (1–3 minutes) when it can't. The probe result is cached.
+const GPU_ARGS = ["--ignore-gpu-blocklist", "--enable-gpu", ...(process.platform === "darwin" ? ["--use-angle=metal"] : [])];
+const SW_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"];
+async function browserArgs(chromium: typeof import("playwright-core").chromium): Promise<string[]> {
+  const cache = join(HOME, "gpu.json");
+  const cached = readJSON<{ gpu?: boolean; at?: number }>(cache, {});
+  if (cached.at && Date.now() - cached.at < 7 * 86400_000) return cached.gpu ? GPU_ARGS : SW_ARGS;
+  let gpu = false;
+  try {
+    const b = await chromium.launch({ headless: true, args: GPU_ARGS, channel: "chrome" }).catch(() => chromium.launch({ headless: true, args: GPU_ARGS }));
+    try {
+      const p = await b.newPage();
+      const r = await p.evaluate(() => {
+        const gl = document.createElement("canvas").getContext("webgl2");
+        const ext = gl?.getExtension("WEBGL_debug_renderer_info");
+        return gl ? String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : "unknown") : "";
+      });
+      gpu = !!r && !/swiftshader|llvmpipe|software/i.test(r);
+    } finally { await b.close(); }
+  } catch { gpu = false; }
+  mkdirSync(HOME, { recursive: true });
+  writeFileSync(cache, JSON.stringify({ gpu, at: Date.now() }));
+  return gpu ? GPU_ARGS : SW_ARGS;
+}
 async function withBrowser<T>(fn: (page: import("playwright-core").Page) => Promise<T>): Promise<T> {
   let chromium: typeof import("playwright-core").chromium;
   try { ({ chromium } = await import("playwright-core")); } catch { die("this needs playwright-core: run `npm install` in the repo"); }
-  const launchOpts = { headless: true, args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] };
+  const launchOpts = { headless: true, args: await browserArgs(chromium) };
   const browser = await chromium.launch({ ...launchOpts, channel: "chrome" }).catch(() => chromium.launch(launchOpts)).catch(() => die("no Chrome/Chromium found; install Google Chrome or run `npx playwright install chromium`"));
   try { return await fn(await browser.newPage({ viewport: { width: numFlag("width") ?? 1280, height: numFlag("height") ?? 800 } })); }
   finally { await browser.close(); }
@@ -288,6 +355,8 @@ const commands: Record<string, () => Promise<void>> = {
                                  --tile also works on finished tiles, to improve them (e.g. add models)
   context                        re-download the current tile into its work folder
   validate                       check drafts.json and show the completeness it would reach
+  tile --lat N --lon E           which tile contains a point (then: claim --tile <key>)
+  withdraw <change id>           take back one of your own submitted changes
   render [--target w123] [--heading 30 --pitch -20 --dist 80 --fov 60 --eye 1.7] [--lat --lon --alt] [--out name.png] [--live] [--highlight] [--compare refs/photo.jpg]
                                  screenshot the 3D view (with your valid drafts) to compare with references.
                                  --heading = compass direction the camera LOOKS (camera stands on the opposite side);
@@ -346,6 +415,14 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     if (numFlag("radius") != null) body.radiusKm = numFlag("radius");
     console.error("… asking the server for work (first use of an area can take a minute)");
     const r = await api<ClaimResponse>("/api/claim", { method: "POST", json: body, timeoutMs: 180_000 });
+    if (body.lon != null && !flag("tile")) {
+      const here = tileKey(lonLatToTile(body.lon as number, body.lat as number));
+      if (here !== r.tile) {
+        const [ax, ay] = tileCenter(parseTileKey(here)), [bx, by] = tileCenter(parseTileKey(r.tile));
+        const km = Math.hypot((ax - bx) * 111.32 * Math.cos((ay * Math.PI) / 180), (ay - by) * 110.57);
+        console.error(`! the tile at that point (${here}) isn't free (someone holds it, or it's finished), so you got ${r.tile}, ~${km.toFixed(1)} km away. To improve a finished tile there: claim --tile ${here}`);
+      }
+    }
     mkdirSync(tileDir(r.tile), { recursive: true });
     writeFileSync(join(tileDir(r.tile), "lease.json"), JSON.stringify({ leaseId: r.leaseId, kind: r.kind, expires: r.leaseExpires, ruleMaxSpanDeg: r.ruleMaxSpanDeg } satisfies Lease));
     const bundle = await api<TileBundle>(`/api/tiles/${r.tile}`);
@@ -387,7 +464,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     const viewer = (c.viewer ?? c.api).replace(/\/$/, "");
     const target = flag("target");
     const q = new URLSearchParams({ render: "1", tile: key });
-    const { valid, bad } = flags.live ? { valid: [] as StoredChange["change"][], bad: 0 } : checkDrafts(key, true);
+    const { valid, validIdx, list, bad } = flags.live ? { valid: [] as StoredChange["change"][], validIdx: [] as number[], list: [] as unknown[], bad: 0 } : checkDrafts(key, true);
     if (bad) console.error(`! ${bad} invalid drafts are left out of the render (run validate to see why)`);
     let lon: number, lat: number;
     if (target) {
@@ -411,7 +488,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     const outFlag = flag("out");
     const out = outFlag && (outFlag.includes("/") || outFlag.includes("\\")) ? resolve(outFlag) : join(tileDir(key), "renders", outFlag ?? `${target ?? "overview"}-${flag("heading") ?? "30"}${flags.highlight ? "-highlight" : ""}.png`);
     mkdirSync(dirname(out), { recursive: true });
-    console.error("… rendering (the first render in a new area can take 1–3 minutes)");
+    console.error("… rendering (seconds with a GPU; up to 3 minutes on machines without one)");
     const status = await withBrowser(async (page) => {
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(String(e)));
@@ -419,9 +496,21 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       await page.goto(`${viewer}/?${q}`, { timeout: 60_000 });
       const ready = await page.waitForFunction(() => (window as any).__SEEEARTH_READY__ === true, null, { timeout: 150_000 }).then(() => true).catch(() => false);
       const framed = await page.evaluate(() => (window as any).__SEEEARTH_FRAMED__ === true || !new URLSearchParams(location.search).has("target"));
+      const cam = await page.evaluate(() => (window as any).__SEEEARTH_CAMERA__ ?? null) as { insideOf: string | null; movedMetres: number; stillInside: string | null } | null;
       await page.screenshot({ path: out });
-      return { ready, framed, errors };
+      const seen = await page.evaluate(() => (window as any).__SEEEARTH_SEEN__?.() ?? null).catch(() => null) as { buildings: { id: string; share: number }[]; drafts: number[] } | null;
+      return { ready, framed, errors, cam, seen };
     });
+    if (status.cam?.movedMetres) console.error(`! the camera stood inside ${status.cam.insideOf}; moved it ${status.cam.movedMetres} m towards the target so the view isn't a wall. For an exact viewpoint use --lat/--lon/--alt (see AGENTS.md 4.4).`);
+    else if (status.cam?.stillInside) console.error(`! the camera is INSIDE building ${status.cam.stillInside}: this picture shows its walls, not the view. Move the camera (--lat/--lon, or a smaller --dist).`);
+    const seenDrafts = (status.seen?.drafts ?? []).map((i) => validIdx[i]).filter((i) => i != null);
+    if (status.seen) {
+      const top = status.seen.buildings.slice(0, 6).map((b) => `${b.id} ${Math.round(b.share * 100)}%`).join(", ");
+      console.log(`  in frame: ${top || "no buildings"}${seenDrafts.length ? ` · your drafts shown: ${seenDrafts.map((i) => `[${i}] ${draftLabel(list[i])}`).join(", ")}` : ""}`);
+      const share = target ? status.seen.buildings.find((b) => b.id === target)?.share : undefined;
+      if (target && share == null) console.error(`! ${target} isn't visible in this frame (hidden behind something, or out of view): change --heading/--dist`);
+      else if (target && share! < 0.04) console.error(`! ${target} fills only ${Math.round(share! * 100)}% of the picture: move closer or narrow --fov so the compare shows it properly`);
+    }
     if (!status.framed) console.error(`! the target was never found in the loaded map; this screenshot is NOT of ${target}. Check the id, run context, and retry.`);
     else if (!status.ready) console.error("! some surrounding tiles were still loading; the target is drawn but the background may be blank. Retry later for a full picture.");
     if (status.errors.length) console.error(`! viewer errors: ${status.errors.slice(0, 3).join(" | ")}`);
@@ -441,7 +530,15 @@ If you are a SECOND agent session on this machine, run claim with --another and 
         await page.waitForTimeout(200);
         await page.screenshot({ path: cmp });
       });
-      console.log(`✓ side by side: ${cmp}  ← adjust heading/pitch/dist/fov until the views line up, then fix what differs`);
+      console.log(`✓ side by side: ${cmp}
+  Open it. Line the views up (heading/pitch/fov/position), then list the 3–5 biggest differences
+  (massing, heights, roofline, window rhythm, materials, colours) and fix them before submitting.`);
+      if (!flags.live) {
+        const rec: CompareRecord = { at: Date.now(), ref: ref!.split("/").pop()!, image: cmp, ...(target ? { target } : {}), drafts: seenDrafts.map((i) => hash(list[i])), buildings: status.seen?.buildings.slice(0, 12) ?? [] };
+        writeFileSync(comparesPath(key), JSON.stringify([...compares(key), rec], null, 1));
+        if (seenDrafts.length) console.log(`  recorded: drafts ${seenDrafts.map((i) => `[${i}]`).join(" ")} have been checked against ${rec.ref}`);
+        else console.log("  (none of your drafts are visible in this frame, so this compare doesn't count for any of them)");
+      }
     }
   },
 
@@ -459,6 +556,15 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     const landmarkish = fresh.some((x) => { const d = x.d as { kind?: string; spec?: { model?: unknown; facade?: unknown } }; return d.kind === "building" && (d.spec?.model || d.spec?.facade); });
     if (landmarkish && (!existsSync(refsDir) || readdirSync(refsDir).length === 0)) {
       console.error("! refs/ is empty: descriptions written without looking at photos come out generic, and reviewers reject them. Use `npm run se -- refs search \"<name> <city>\"` and `refs get`.");
+    }
+    const checked = new Set(compares(key).flatMap((c) => c.drafts));
+    const unchecked = fresh.filter((x) => needsCompare(x.d) && !checked.has(x.h));
+    if (unchecked.length) {
+      die(`${unchecked.length} draft(s) haven't been checked against a photo yet:
+${unchecked.slice(0, 12).map((x) => `    [${list.indexOf(x.d)}] ${draftLabel(x.d)}`).join("\n")}${unchecked.length > 12 ? `\n    … and ${unchecked.length - 12} more` : ""}
+  Every change must be seen in a photo compare before submitting (AGENTS.md 4.4):
+    npm run se -- render --target <id> --heading <deg> --compare refs/<photo>.jpg
+  For an area rule, compare one street it covers. Editing a draft after its compare needs a new compare.`);
     }
     let ok = 0, bad = 0;
     for (let i = 0; i < fresh.length; i += 100) {
@@ -538,7 +644,8 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     if (/\bimport\s|require\(/.test(src.replace(/import\s+type[^;]+;/g, ""))) die("model scripts can't import anything: use the `k` (kit) and `THREE` arguments instead");
     const { code } = await transform(src, { loader: "ts", format: "iife", globalName: "__model", target: "es2022" })
       .catch((e: Error) => die(`script doesn't compile: ${e.message.split("\n").slice(0, 6).join(" ")}`));
-    const name = (flag("name") ?? file.split("/").pop()!.replace(/\.(ts|js)$/, "")).replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+    // one script can serve many buildings (--target): each target gets its own .glb/.key
+    const name = (flag("name") ?? file.split("/").pop()!.replace(/\.(ts|js)$/, "") + (flag("target") ? `-${flag("target")}` : "")).replace(/[^a-z0-9-]/gi, "-").toLowerCase();
     const cur = flag("tile") ?? currentKey();
     if (cur) await keepAlive(cur);
     const dir = join(cur ? tileDir(cur) : WORK, "models");
@@ -551,8 +658,11 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       const tk = cur || die("--target needs a tile: claim it or pass --tile");
       const ctx = context(tk);
       const base = ctx.base.buildings.find((b) => b.id === target);
-      const live = ctx.changes.map((c) => c.change).find((c) => c.kind === "building" && c.target === target && c.spec.footprint) as { spec: { footprint: number[][] } } | undefined;
-      const poly = base?.polygons.reduce((a, p) => (p.outer.length > a.outer.length ? p : a)) ?? (live ? { outer: live.spec.footprint as [number, number][], holes: [] } : null);
+      // a new building's outline: the newest footprint (drafts first), else the hull of its parts
+      const specs = [...ctx.changes.map((c) => c.change), ...checkDrafts(tk, true).valid].filter((c) => c.kind === "building" && c.target === target) as { spec: { footprint?: [number, number][]; parts?: { footprint: [number, number][] }[] } }[];
+      const fpOf = (s: { footprint?: [number, number][]; parts?: { footprint: [number, number][] }[] }) => s.footprint ?? (s.parts?.length ? hullLL(s.parts.flatMap((p) => p.footprint)) : undefined);
+      const newFp = specs.map((c) => fpOf(c.spec)).filter(Boolean).pop();
+      const poly = base?.polygons.reduce((a, p) => (Math.abs(ringAreaM2(p.outer)) > Math.abs(ringAreaM2(a.outer)) ? p : a)) ?? (newFp ? { outer: newFp, holes: [] } : null);
       if (!poly) die(`--target ${target} not found in tile ${tk}`);
       let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
       for (const [lon, lat] of poly.outer) { w = Math.min(w, lon); e = Math.max(e, lon); s = Math.min(s, lat); n = Math.max(n, lat); }
@@ -564,12 +674,14 @@ If you are a SECOND agent session on this machine, run claim with --another and 
       const h = Number.parseFloat(t.height ?? "") || (Number(t["building:levels"]) ? Number(t["building:levels"]) * 3.2 : undefined);
       Object.assign(params, { target, name: t.name, osmHeight: h, size: [Math.round((e - w) * kx), Math.round((n - s) * ky)] });
       console.error(`… footprint of ${target}${t.name ? ` (${t.name})` : ""}: ${(params.footprint as unknown[]).length} points, about ${(params.size as number[]).join(" × ")} m${h ? `, OSM height ${h} m` : ""}`);
+      printEdges(params.footprint as [number, number][], ctx);
     }
     const c = config();
     console.error("… building the model (headless browser)");
     const r = await withBrowser(async (page) => {
       const errors: string[] = [];
       page.on("pageerror", (e) => errors.push(String(e)));
+      page.on("console", (m) => { if (!/\[vite\]|Failed to load resource/.test(m.text())) console.error(`  [script] ${m.text()}`); }); // console.log from the model script
       await page.goto(`${(c.viewer ?? c.api).replace(/\/$/, "")}/model.html`, { timeout: 60_000 });
       await page.waitForFunction(() => (window as any).__SE_READY__ === true, null, { timeout: 60_000 });
       try {
@@ -582,7 +694,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     const bytes = Buffer.from(r.glb, "base64").length;
     console.log(`✓ ${glbPath}
   ${r.triangles} triangles · ${(bytes / 1024).toFixed(0)} KB · size x${r.size[0]} × y${r.size[1]} × z${r.size[2]} m · base at y=${r.min[1]}
-  preview (front/right/back/left): ${pngPath}  ← open it and compare with your photos`);
+  preview (−Z north/front, +X east, +Z south/back, −X west): ${pngPath}  ← open it and compare with your photos`);
     if (r.min[1] < -0.5) console.log("! the model extends below ground (y < 0); it should stand on y = 0");
     if (r.triangles > LIMITS.maxAssetTriangles || bytes > LIMITS.maxAssetBytes) die(`too big for upload (max ${LIMITS.maxAssetTriangles} triangles, ${LIMITS.maxAssetBytes / 1048576} MB): simplify`);
     if (flags.upload) {
@@ -599,12 +711,13 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     const sub = positional[0];
     const UA = { "user-agent": "seeearth-agent/0.1 (open 3D map; contributor tool)" };
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const get = async (url: string, tries = 4): Promise<Response> => {
+    const get = async (url: string, tries = 5): Promise<Response> => {
       for (let i = 0; ; i++) {
         const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(60_000) }).catch(() => null);
         if (r && r.ok) return r;
-        if (i >= tries - 1) die(`download failed (${r?.status ?? "network"}): ${url}`);
-        await sleep(2000 * 2 ** i); // Commons rate-limits bursts: back off
+        if (i >= tries - 1) die(r?.status === 429 ? "Commons is rate-limiting this machine (HTTP 429). Wait a minute, then retry; meanwhile use web image search or Mapillary." : `download failed (${r?.status ?? "network"}): ${url}`);
+        const retryAfter = Number(r?.headers.get("retry-after")) || 0;
+        await sleep(Math.max(retryAfter * 1000, 3000 * 2 ** i)); // Commons rate-limits bursts: back off
       }
     };
     if (sub === "search") {
@@ -640,7 +753,7 @@ If you are a SECOND agent session on this machine, run claim with --another and 
 
   /** Models already used near a tile, so new contributors reuse typologies instead of rebuilding them. */
   async models() {
-    const key = flag("tile") ?? currentKey() ?? die("usage: models [--tile x-y]");
+    const key = flag("tile") || currentKey() || die("no current tile: claim one first, or pass --tile x-y");
     const { x, y } = parseTileKey(key);
     const seen = new Map<string, { label: string; keys: string[]; fit?: string; author: string; tiles: Set<string> }>();
     for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
@@ -658,6 +771,26 @@ If you are a SECOND agent session on this machine, run claim with --another and 
     if (!seen.size) { console.log("no models used within 2 tiles yet"); return; }
     for (const [id, v] of seen) console.log(`#${id} ${v.label} by ${v.author} · ${v.keys.length} variant(s), fit ${v.fit ?? "stretch"}\n    assets: ${v.keys.join(" ")}`);
     console.log("\nReuse a typology set by putting its asset keys in your own rule's set.model.assets.");
+  },
+
+  /** Take back one of your own submitted changes (e.g. a rule that reached too far). */
+  async withdraw() {
+    const id = Number(positional[0]?.replace(/^#/, "")) || die("usage: withdraw <change id>   (ids are printed by submit, e.g. change #742)");
+    await api(`/api/changes/${id}/withdraw`, { method: "POST", json: {} });
+    for (const d of existsSync(WORK) ? readdirSync(WORK).filter((x) => /^\d+-\d+$/.test(x)) : []) {
+      const p = join(tileDir(d), "submitted.json"), sub = readJSON<Submitted[]>(p, []);
+      if (sub.some((x) => x.id === id)) writeFileSync(p, JSON.stringify(sub.filter((x) => x.id !== id), null, 1));
+    }
+    console.log(`✓ change #${id} withdrawn. Remove (or fix) its draft in drafts.json, or the next submit sends it again.`);
+  },
+
+  /** Which tile contains a point (to claim or improve it with claim --tile). */
+  async tile() {
+    const lat = numFlag("lat"), lon = numFlag("lon");
+    if (lat == null || lon == null) die("usage: tile --lat 51.7525 --lon -1.2575");
+    const key = tileKey(lonLatToTile(lon, lat));
+    const b = await api<TileBundle & { status?: string }>(`/api/tiles/${key}`).catch(() => null);
+    console.log(`${key}${b ? ` · ${b.base.buildings.length} buildings · ${b.changes.length} changes so far` : ""}\n  work on it: npm run se -- claim --tile ${key}`);
   },
 
   async ["upload-asset"]() {
